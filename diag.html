@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Diagnostic micro / dictée</title>
+<style>
+:root{--bg:#eef1f5;--ink:#1f2a44;--muted:#5d6784;--line:#cfd5e0;--card:#fff;--shu:#e0452b;--ok:#137a4b;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#171d33;--ink:#e7eaf2;--muted:#9aa3bd;--line:#2c3552;--card:#1e2542;--ok:#5fd39b}}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.3rem;margin:0 0 4px}
+p.lede{color:var(--muted);margin:0 0 18px}
+h2{font-size:1rem;margin:24px 0 8px}
+button{display:block;width:100%;font:inherit;text-align:left;margin:0 0 8px;padding:13px 15px;
+  border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);cursor:pointer}
+button b{display:block;font-size:.97rem}
+button i{display:block;font-style:normal;color:var(--muted);font-size:.82rem;margin-top:2px}
+#ctx,#log{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+  font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+#log{min-height:140px}
+.ok{color:var(--ok);font-weight:700}
+.ko{color:var(--shu);font-weight:700}
+</style>
+</head>
+<body>
+<main>
+<h1>Diagnostic micro / dictée</h1>
+<p class="lede">Un bouton = une configuration. Touchez-les dans l'ordre et repérez le premier qui affiche <b>onstart</b>.</p>
+
+<h2>Contexte</h2>
+<div id="ctx">…</div>
+
+<h2>Tests</h2>
+<button id="t1"><b>1 · Dictée nue</b><i>Sans AudioContext, sans getUserMedia, continuous=false</i></button>
+<button id="t2"><b>2 · Dictée + continuous</b><i>Ajoute continuous=true et interimResults=true</i></button>
+<button id="t3"><b>3 · AudioContext PUIS dictée</b><i>Reproduit l'ordre exact de l'app actuelle</i></button>
+<button id="t4"><b>4 · Dictée PUIS getUserMedia</b><i>Teste le conflit micro entre les deux API</i></button>
+<button id="t5"><b>5 · getUserMedia seul</b><i>Le micro pour la courbe de hauteur, sans dictée</i></button>
+<button id="t6"><b>Effacer le journal</b><i></i></button>
+
+<h2>Journal</h2>
+<div id="log"></div>
+</main>
+<script>
+var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+var logEl = document.getElementById('log'), rec = null, ac = null, stream = null;
+
+function log(s, cls){
+  var t = new Date().toLocaleTimeString('fr-FR');
+  var d = document.createElement('div');
+  d.innerHTML = t + '  ' + (cls ? '<span class="' + cls + '">' + s + '</span>' : s);
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function cleanup(){
+  if(rec){ try{ rec.abort(); }catch(e){} rec = null; }
+  if(stream){ stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+}
+
+// ---- contexte ----
+(function(){
+  var ua = navigator.userAgent;
+  var inApp = /FBAN|FBAV|Instagram|Line\/|Twitter|MicroMessenger/i.test(ua);
+  var alt   = /CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
+  var rows = [
+    ['SpeechRecognition', SR ? 'présent' : 'ABSENT'],
+    ['getUserMedia',      (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ? 'présent' : 'ABSENT'],
+    ['isSecureContext',   String(window.isSecureContext)],
+    ['protocole',         location.protocol],
+    ['mode autonome',     (navigator.standalone === true) ? 'OUI (ajouté à l-écran d-accueil)' : 'non'],
+    ['navigateur tiers',  alt ? 'OUI (Chrome/Firefox iOS)' : 'non'],
+    ['navigateur in-app', inApp ? 'OUI' : 'non'],
+    ['AudioContext',      (window.AudioContext || window.webkitAudioContext) ? 'présent' : 'ABSENT'],
+    ['userAgent',         ua]
+  ];
+  document.getElementById('ctx').textContent = rows.map(function(r){ return r[0] + ' : ' + r[1]; }).join('\n');
+})();
+
+// ---- fabrique de test dictée ----
+function makeRec(opts){
+  if(!SR){ log('SpeechRecognition absent de ce navigateur', 'ko'); return null; }
+  var r = new SR();
+  r.lang = 'ja-JP';
+  r.continuous = !!opts.continuous;
+  r.interimResults = !!opts.interim;
+  r.onstart       = function(){ log('onstart — LA DICTÉE DÉMARRE', 'ok'); };
+  r.onaudiostart  = function(){ log('onaudiostart (micro ouvert)'); };
+  r.onspeechstart = function(){ log('onspeechstart (parole détectée)'); };
+  r.onresult = function(e){
+    var s = '';
+    for(var i = 0; i < e.results.length; i++) s += e.results[i][0].transcript;
+    log('onresult : ' + s, 'ok');
+  };
+  r.onerror = function(e){ log('onerror : ' + e.error + (e.message ? ' — ' + e.message : ''), 'ko'); };
+  r.onend   = function(){ log('onend'); };
+  return r;
+}
+function startRec(){
+  try{ rec.start(); log('start() appelé sans exception'); }
+  catch(e){ log('start() a levé : ' + (e.name || '') + ' ' + (e.message || e), 'ko'); }
+  setTimeout(function(){ if(rec){ try{ rec.stop(); }catch(e){} } }, 6000);
+}
+function runRec(label, opts){
+  cleanup();
+  log('──── ' + label + ' ────');
+  rec = makeRec(opts);
+  if(rec) startRec();
+}
+
+document.getElementById('t1').onclick = function(){ runRec('1 · dictée nue', {}); };
+document.getElementById('t2').onclick = function(){ runRec('2 · continuous', {continuous:true, interim:true}); };
+
+document.getElementById('t3').onclick = function(){
+  cleanup();
+  log('──── 3 · AudioContext PUIS dictée ────');
+  try{
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!ac) ac = new AC();
+    if(ac.state === 'suspended') ac.resume();
+    log('AudioContext créé, state=' + ac.state + ', sampleRate=' + ac.sampleRate);
+  }catch(e){ log('AudioContext a échoué : ' + e, 'ko'); }
+  rec = makeRec({continuous:true, interim:true});
+  if(rec) startRec();
+};
+
+document.getElementById('t4').onclick = function(){
+  cleanup();
+  log('──── 4 · dictée PUIS getUserMedia ────');
+  rec = makeRec({});
+  if(rec) startRec();
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
+    stream = s;
+    log('getUserMedia OK pendant la dictée — pistes : ' + s.getAudioTracks().length, 'ok');
+  }).catch(function(e){
+    log('getUserMedia refusé : ' + e.name + ' — ' + e.message, 'ko');
+  });
+};
+
+document.getElementById('t5').onclick = function(){
+  cleanup();
+  log('──── 5 · getUserMedia seul ────');
+  navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}})
+  .then(function(s){
+    stream = s;
+    var tr = s.getAudioTracks()[0];
+    log('getUserMedia OK — piste « ' + (tr && tr.label ? tr.label : 'sans nom') + ' »', 'ok');
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(!ac) ac = new AC();
+      if(ac.state === 'suspended') ac.resume();
+      var an = ac.createAnalyser(); an.fftSize = 2048;
+      ac.createMediaStreamSource(s).connect(an);
+      var buf = new Float32Array(an.fftSize), n = 0, peak = 0;
+      log('parlez maintenant, mesure sur 2 secondes…');
+      (function loop(){
+        an.getFloatTimeDomainData(buf);
+        var r = 0;
+        for(var i = 0; i < buf.length; i++) r += buf[i] * buf[i];
+        r = Math.sqrt(r / buf.length);
+        if(r > peak) peak = r;
+        if(++n < 120) requestAnimationFrame(loop);
+        else log('niveau crête sur 2 s : ' + peak.toFixed(4) + (peak > 0.005 ? ' — du son entre bien' : ' — SILENCE, rien ne rentre'), peak > 0.005 ? 'ok' : 'ko');
+      })();
+    }catch(e){ log('analyse impossible : ' + e, 'ko'); }
+  }).catch(function(e){ log('getUserMedia refusé : ' + e.name + ' — ' + e.message, 'ko'); });
+};
+
+document.getElementById('t6').onclick = function(){ cleanup(); logEl.innerHTML = ''; };
+</script>
+</body>
+</html>
