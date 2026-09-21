@@ -318,8 +318,8 @@ $('go').onclick    = analyse;
 $('clear').onclick = () => { $('text').value=''; sentences=[]; frames=[]; render(); };
 
 // ---------- micro + YIN ----------
-let ac=null, analyser, sr, buf, dArr, cmnd, tauMin, tauMax, stream=null, src=null,
-    recording=false, frames=[];
+let ac=null, analyser, mute, sr, buf, dArr, cmnd, tauMin, tauMax, stream=null, src=null,
+    recording=false, frames=[], peak=0;
 const W=1024, THR=0.15, GATE=0.008;
 
 function ensureAudio(){
@@ -333,6 +333,10 @@ function ensureAudio(){
     analyser.fftSize = Math.min(fft, 32768);
     buf = new Float32Array(analyser.fftSize);
     dArr = new Float32Array(tauMax+2); cmnd = new Float32Array(tauMax+2);
+    // WebKit ne fait tourner le graphe que s'il aboutit a la destination :
+    // un analyseur en cul-de-sac n'est jamais alimente. Gain nul = rien d'audible.
+    mute = ac.createGain(); mute.gain.value = 0;
+    analyser.connect(mute); mute.connect(ac.destination);
   }
   if(ac.state==='suspended') ac.resume();
 }
@@ -352,6 +356,7 @@ function yin(start){
   }
   return null;
 }
+let tickN = 0;
 function tick(){
   if(!recording) return;
   requestAnimationFrame(tick);
@@ -361,25 +366,44 @@ function tick(){
   if(start < 0) return;
   let rms=0; for(let i=0;i<W;i++){ const v=buf[start+i]; rms+=v*v; }
   rms=Math.sqrt(rms/W);
+  if(rms > peak) peak = rms;
   const f = rms>GATE ? yin(start) : null;
   const ok = f && f>70 && f<800;
   frames.push({t:performance.now(), f: ok?f:null});
-  $('hz').textContent = ok ? Math.round(f)+' Hz' : '—';
+  // le niveau reste affiche meme sans hauteur detectee : il distingue
+  // « rien n'entre » de « ca entre mais la hauteur n'est pas trouvee »
+  $('hz').textContent = (ok ? Math.round(f)+' Hz' : '—') + ' · niveau ' + rms.toFixed(3);
+  if(++tickN % 10 === 0) draw();          // courbe visible pendant la lecture
 }
 $('rec').onclick = async () => {
-  if(mode === 'enregistrer'){ releaseMic(); setMode('idle'); draw(); return; }
+  if(mode === 'enregistrer'){
+    const voiced = frames.filter(f => f.f).length;
+    releaseMic(); setMode('idle'); draw();
+    if(!frames.length)        msg("Aucune mesure : le micro n'a rien envoyé.", true);
+    else if(peak < 0.002)     msg('Silence total (crête '+peak.toFixed(4)+' sur '+frames.length+
+                                  ' trames) : le flux arrive vide.', true);
+    else if(voiced < 5)       msg('Du son est entré (crête '+peak.toFixed(3)+') mais aucune hauteur '+
+                                  'exploitable : parlez plus près, ou plus fort.', true);
+    else                      msg(voiced+' trames voisées sur '+frames.length+' — courbe tracée.');
+    return;
+  }
   const wasDictating = !!rec;
   stopDictation();                  // la dictee tient le micro : la couper d'abord
   setMode('enregistrer');
-  ensureAudio(); frames = []; recording = true;
-  requestAnimationFrame(tick);
+  msg('Autorisation du micro…');
   try{
     // iOS met un instant a rendre la session audio apres une dictee
     if(wasDictating) await new Promise(r => setTimeout(r, 400));
+    // Le flux AVANT le contexte : sur iOS, un AudioContext cree avant
+    // l'obtention du micro reste attache a la sortie, et la source ne
+    // produit alors que du silence, sans la moindre erreur.
     stream = await navigator.mediaDevices.getUserMedia(
       {audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+    ensureAudio();
     if(ac.state !== 'running') await ac.resume();
     src = ac.createMediaStreamSource(stream); src.connect(analyser);
+    frames = []; peak = 0; recording = true;
+    requestAnimationFrame(tick);
     msg('Lisez la phrase à voix haute, puis touchez « Terminer ».');
   }catch(e){
     msg('Micro indisponible : '+(e.name||e)+
