@@ -47,6 +47,9 @@ button.rec.on{background:var(--shu);border-color:var(--shu);color:#fff}
 .ph:hover,.ph:focus-visible{background:var(--bg);outline:none}
 .ph svg{display:block;overflow:visible}
 .ph .lab{font-size:.72rem;color:var(--muted);margin-top:2px;white-space:nowrap}
+.opt{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:6px 8px}
+.opt:hover,.opt:focus-visible{border-color:var(--ai);background:var(--bg)}
+.opt .lab{font-size:.82rem;color:var(--ink);font-weight:700}
 .hint{color:var(--muted);font-size:.84rem;margin:6px 2px 0}
 .cmp{position:relative;height:190px;background:var(--panel);border-radius:14px;overflow:hidden}
 .cmp canvas{width:100%;height:100%;display:block}
@@ -138,17 +141,27 @@ function pattern(n, accent){
   }
   return out;
 }
+// Mores qui sont, le plus souvent, une particule collee au mot precedent.
+// VOICEVOX rend を par オ et は par ワ, d'ou leur presence sous cette forme.
+const PARTICULES = new Set(['の','に','お','わ','が','で','と','も','え','や','か','ね','よ','へ','は','を']);
+
 // VOICEVOX encode « haut jusqu'a la fin » comme accent === nb de mores, pas 0 :
-// dans les deux cas rien ne chute a l'interieur du syntagme, donc on note [0].
-function label(n, accent){
-  if(accent===0 || accent===n) return '[0] 平板';
-  if(accent===1)               return '[1] 頭高';
-  return '['+accent+'] 中高';
+// dans les deux cas rien ne chute a l'interieur du syntagme, c'est un heiban.
+function typeName(moras, accent){
+  const n = moras.length;
+  if(accent === 0 || accent === n) return '平板';
+  if(accent === 1)                 return '頭高';
+  // Odaka : la chute porte sur une particule finale, donc le mot lui-meme est
+  // accentue sur sa derniere more. Le moteur ne dit pas ou finit le mot, on se
+  // fie donc a la more finale — heuristique, juste dans les cas courants.
+  if(accent === n-1 && PARTICULES.has(moras[n-1])) return '尾高';
+  return '中高';
 }
-function title(n, accent){
-  if(accent===0 || accent===n) return 'Reste haut jusqu\'au bout — écouter';
-  if(accent===1)               return 'Chute dès la 1re more — écouter';
-  return 'Chute après la more '+accent+' — écouter';
+function describe(moras, accent){
+  const n = moras.length;
+  if(accent === 0 || accent === n) return 'la voix reste haute jusqu\'au bout';
+  if(accent === 1)                 return 'la voix chute dès la 1re more';
+  return 'la voix chute après ' + moras.slice(0, accent).join('');
 }
 function splitSentences(t){
   return t.replace(/\r/g,'').split(/(?<=[。！？!?\n])/)
@@ -221,20 +234,22 @@ async function analyse(){
 }
 
 // Diagramme d'accent : une ligne haut/bas, le noyau en rouge, les mores dessous.
-function curveSVG(moras, accent){
+function curveSVG(moras, accent, small){
   const cs = getComputedStyle(document.documentElement);
   const ink=cs.getPropertyValue('--ink').trim(), ai=cs.getPropertyValue('--ai').trim(),
         shu=cs.getPropertyValue('--shu').trim();
   const pat = pattern(moras.length, accent);
-  const CW=26, YH=9, YL=31, YT=56, w=moras.length*CW;
+  const CW = small?19:26, YH = small?7:9, YL = small?23:31, YT = small?42:56,
+        FS = small?13:17, R0 = small?3:4, R1 = small?4.5:5.5;
+  const w = moras.length*CW;
   const pts = pat.map((v,i)=>[i*CW+CW/2, v==='H'?YH:YL]);
   let svg = '<svg width="'+w+'" height="'+(YT+6)+'" viewBox="0 0 '+w+' '+(YT+6)+'">';
   svg += '<polyline points="'+pts.map(q=>q.join(',')).join(' ')+
-         '" fill="none" stroke="'+ai+'" stroke-width="2.4" stroke-linejoin="round"/>';
+         '" fill="none" stroke="'+ai+'" stroke-width="'+(small?2:2.4)+'" stroke-linejoin="round"/>';
   pts.forEach((q,i)=>{
     const kernel = accent===i+1 && accent!==moras.length;
-    svg += '<circle cx="'+q[0]+'" cy="'+q[1]+'" r="'+(kernel?5.5:4)+'" fill="'+(kernel?shu:ai)+'"/>';
-    svg += '<text x="'+q[0]+'" y="'+YT+'" text-anchor="middle" font-size="17" fill="'+ink+'">'+moras[i]+'</text>';
+    svg += '<circle cx="'+q[0]+'" cy="'+q[1]+'" r="'+(kernel?R1:R0)+'" fill="'+(kernel?shu:ai)+'"/>';
+    svg += '<text x="'+q[0]+'" y="'+YT+'" text-anchor="middle" font-size="'+FS+'" fill="'+ink+'">'+moras[i]+'</text>';
   });
   return svg+'</svg>';
 }
@@ -255,8 +270,8 @@ function render(){
       const moras = ph.moras.map(m => kata2hira(m.text));
       const svg = curveSVG(moras, ph.accent);
       const b = document.createElement('button'); b.className='ph'; b.type='button';
-      b.innerHTML = svg + '<div class="lab">'+label(moras.length, ph.accent)+'</div>';
-      b.title = title(moras.length, ph.accent);
+      b.innerHTML = svg + '<div class="lab">'+typeName(moras, ph.accent)+'</div>';
+      b.title = describe(moras, ph.accent) + ' — écouter';
       b.onclick = () => speakPhrase(s, pi, b);
       wrap.appendChild(b);
     });
@@ -329,12 +344,20 @@ function pickOrder(){
     .sort((a,b) => (b.ko-b.ok)-(a.ko-a.ok) || (a.ok+a.ko)-(b.ok+b.ko))
     .slice(0, 20);
 }
+// Deux encodages donnent parfois la meme melodie : accent 0 et accent n
+// tracent la meme courbe. On ne propose donc qu'une option par forme,
+// sans quoi deux choix seraient rigoureusement indiscernables.
 function choicesFor(it){
-  const n = it.moras.length;
-  if(n + 1 <= 6){ const all=[]; for(let a=0;a<=n;a++) all.push(a); return all; }
-  const set = new Set([it.accent]);
-  while(set.size < 5) set.add(Math.max(0, Math.min(n, it.accent + Math.floor(Math.random()*7) - 3)));
-  return [...set].sort((a,b)=>a-b);
+  const n = it.moras.length, seen = new Set(), out = [];
+  const add = a => {
+    const k = pattern(n, a).join('');
+    if(!seen.has(k)){ seen.add(k); out.push(a); }
+  };
+  if(n + 1 <= 7){ for(let a=0;a<=n;a++) add(a); return out; }
+  add(it.accent);
+  for(let guard=0; out.length < 5 && guard < 60; guard++)
+    add(Math.max(0, Math.min(n, it.accent + Math.floor(Math.random()*7) - 3)));
+  return out.sort((a,b)=>a-b);
 }
 function showQ(){
   qcur = qorder[qi];
@@ -342,23 +365,31 @@ function showQ(){
   $('qsent').textContent = qcur.sent;
   $('qread').textContent = qcur.moras.join('');
   $('qreveal').hidden = true;
+  // Chaque choix montre sa courbe : plusieurs positions portent le meme nom
+  // (中高 vaut pour toute chute interne), c'est la forme qui les distingue.
   const box = $('qchoices'); box.innerHTML = ''; box.hidden = false;
   for(const a of choicesFor(qcur)){
     const b = document.createElement('button');
-    b.type = 'button'; b.textContent = '[' + a + ']';
+    b.type = 'button'; b.className = 'ph opt';
+    b.innerHTML = curveSVG(qcur.moras, a, true) +
+                  '<div class="lab">' + typeName(qcur.moras, a) + '</div>';
     b.onclick = () => answer(a);
     box.appendChild(b);
   }
 }
 function answer(a){
-  const good = (a === qcur.accent);
+  // On compare les melodies, pas les nombres : l'accent 0 et l'accent n
+  // decrivent la meme courbe, repondre l'un ou l'autre est aussi juste.
+  const n = qcur.moras.length;
+  const good = pattern(n, a).join('') === pattern(n, qcur.accent).join('');
   good ? (qcur.ok++, qscore++) : qcur.ko++;
   saveDeck();
   $('qchoices').hidden = true;
   $('qcurve').innerHTML = '<div class="ph">' + curveSVG(qcur.moras, qcur.accent) +
-      '<div class="lab">' + label(qcur.moras.length, qcur.accent) + '</div></div>';
+      '<div class="lab">' + typeName(qcur.moras, qcur.accent) + '</div></div>';
   const v = $('qverdict');
-  v.textContent = good ? 'Juste.' : "Non, c'était [" + qcur.accent + '].';
+  v.textContent = (good ? 'Juste — ' : 'Non : ') +
+      typeName(qcur.moras, qcur.accent) + ', ' + describe(qcur.moras, qcur.accent) + '.';
   v.className = 'msg' + (good ? '' : ' err');
   $('qreveal').hidden = false;
 }
