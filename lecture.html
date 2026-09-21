@@ -264,7 +264,9 @@ $('dictate').onclick = () => {
   if(!SR || dictationDead){ msg("Dictée indisponible ici : collez ou tapez le texte.", true); return; }
   if(rec){ try{ rec.stop(); }catch(_){} rec=null; $('dictate').textContent='Dicter'; return; }
   try{
-    rec = new SR(); rec.lang='ja-JP'; rec.interimResults=true;
+    // continuous=true : sans lui, iOS coupe des la premiere pause et le
+    // bouton se reinitialise seul, ce qui donne l'impression d'un bug.
+    rec = new SR(); rec.lang='ja-JP'; rec.continuous=true; rec.interimResults=true;
     rec.onresult = e => {
       let s=''; for(let i=0;i<e.results.length;i++) s+=e.results[i][0].transcript;
       $('text').value = s;
@@ -275,7 +277,11 @@ $('dictate').onclick = () => {
         msg("Dictée refusée par le système : collez ou tapez le texte.", true);
       } else if(e.error!=='aborted') msg('Dictée : '+e.error, true);
     };
-    rec.onend = () => { rec=null; $('dictate').textContent='Dicter'; };
+    rec.onend = () => {
+      rec=null; $('dictate').textContent='Dicter';
+      const t=$('text').value.trim();
+      if(t && !dictationDead) msg('Dictée terminée — touchez « Analyser ».');
+    };
     rec.start();
     $('dictate').textContent='Arrêter';
     msg('Parlez…');

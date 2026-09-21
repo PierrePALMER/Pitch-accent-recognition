@@ -24,5 +24,5 @@ echo  Laissez cette fenetre ouverte pendant la lecture. Ctrl+C pour arreter.
 echo  ---------------------------------------------------------------
 echo.
 
-python -m http.server 8777 --bind 127.0.0.1
+python "%~dp0serveur.py" 8777
 endlocal
