@@ -16,6 +16,8 @@
   --ai:#9fb0ff; --ok:#5fd39b; --panel:#0d1222;
 }}
 *,*::before,*::after{box-sizing:inherit}
+/* .row est en display:flex : sans ceci, l'attribut hidden serait sans effet */
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.55 "Hiragino Sans","Noto Sans JP",-apple-system,system-ui,sans-serif}
 main{max-width:720px;margin:0 auto;padding:18px 16px 56px}
@@ -76,6 +78,32 @@ button.rec.on{background:var(--shu);border-color:var(--shu);color:#fff}
 
 <h2>Accent attendu</h2>
 <div id="out"><p class="hint">Rien pour l'instant.</p></div>
+
+<h2>Révision <span id="revcount" class="hint"></span></h2>
+<div id="revhome">
+  <p class="hint" id="revempty">Les syntagmes rencontrés s'accumulent ici au fil de vos analyses.</p>
+  <div class="row">
+    <button id="revstart" class="primary" hidden>Réviser</button>
+    <button id="revreset" hidden>Vider la liste</button>
+  </div>
+</div>
+<div id="quiz" hidden>
+  <div class="sent">
+    <p class="hint" id="qprog"></p>
+    <p class="sent-text" id="qsent"></p>
+    <p id="qask" style="margin:6px 0 2px">Accent de <b id="qread"></b> ?</p>
+    <div class="row" id="qchoices"></div>
+    <div id="qreveal" hidden>
+      <div class="phrases" id="qcurve"></div>
+      <p class="msg" id="qverdict"></p>
+      <div class="row">
+        <button id="qhear">▶ Écouter</button>
+        <button id="qnext" class="primary">Suivant</button>
+      </div>
+    </div>
+  </div>
+  <div class="row"><button id="qquit">Quitter la révision</button></div>
+</div>
 
 <h2>Votre lecture face au modèle</h2>
 <div class="cmp"><canvas id="cmp"></canvas></div>
@@ -183,6 +211,7 @@ async function analyse(){
       sentences.push({text:p, query:q, phrases:q.accent_phrases||[]});
     }
     render();
+    collect();
     msg('');
   }catch(e){
     msg('Analyse impossible : '+e.message, true);
@@ -191,13 +220,28 @@ async function analyse(){
   }
 }
 
-function render(){
-  const out = $('out'); out.innerHTML='';
-  if(!sentences.length){ out.innerHTML='<p class="hint">Rien pour l\'instant.</p>'; return; }
+// Diagramme d'accent : une ligne haut/bas, le noyau en rouge, les mores dessous.
+function curveSVG(moras, accent){
   const cs = getComputedStyle(document.documentElement);
   const ink=cs.getPropertyValue('--ink').trim(), ai=cs.getPropertyValue('--ai').trim(),
         shu=cs.getPropertyValue('--shu').trim();
+  const pat = pattern(moras.length, accent);
+  const CW=26, YH=9, YL=31, YT=56, w=moras.length*CW;
+  const pts = pat.map((v,i)=>[i*CW+CW/2, v==='H'?YH:YL]);
+  let svg = '<svg width="'+w+'" height="'+(YT+6)+'" viewBox="0 0 '+w+' '+(YT+6)+'">';
+  svg += '<polyline points="'+pts.map(q=>q.join(',')).join(' ')+
+         '" fill="none" stroke="'+ai+'" stroke-width="2.4" stroke-linejoin="round"/>';
+  pts.forEach((q,i)=>{
+    const kernel = accent===i+1 && accent!==moras.length;
+    svg += '<circle cx="'+q[0]+'" cy="'+q[1]+'" r="'+(kernel?5.5:4)+'" fill="'+(kernel?shu:ai)+'"/>';
+    svg += '<text x="'+q[0]+'" y="'+YT+'" text-anchor="middle" font-size="17" fill="'+ink+'">'+moras[i]+'</text>';
+  });
+  return svg+'</svg>';
+}
 
+function render(){
+  const out = $('out'); out.innerHTML='';
+  if(!sentences.length){ out.innerHTML='<p class="hint">Rien pour l\'instant.</p>'; return; }
   sentences.forEach((s, si) => {
     const box = document.createElement('div'); box.className='sent';
     const head = document.createElement('div'); head.className='sent-head';
@@ -209,19 +253,7 @@ function render(){
     const wrap = document.createElement('div'); wrap.className='phrases';
     s.phrases.forEach((ph, pi) => {
       const moras = ph.moras.map(m => kata2hira(m.text));
-      const pat = pattern(moras.length, ph.accent);
-      const CW=26, YH=9, YL=31, YT=56, w=moras.length*CW;
-      let svg = '<svg width="'+w+'" height="'+(YT+6)+'" viewBox="0 0 '+w+' '+(YT+6)+'">';
-      const pts = pat.map((v,i)=>[i*CW+CW/2, v==='H'?YH:YL]);
-      svg += '<polyline points="'+pts.map(q=>q.join(',')).join(' ')+
-             '" fill="none" stroke="'+ai+'" stroke-width="2.4" stroke-linejoin="round"/>';
-      pts.forEach((q,i)=>{
-        const kernel = ph.accent===i+1 && ph.accent!==moras.length;
-        svg += '<circle cx="'+q[0]+'" cy="'+q[1]+'" r="'+(kernel?5.5:4)+'" fill="'+(kernel?shu:ai)+'"/>';
-        svg += '<text x="'+q[0]+'" y="'+YT+'" text-anchor="middle" font-size="17" fill="'+ink+'">'+moras[i]+'</text>';
-      });
-      svg += '</svg>';
-
+      const svg = curveSVG(moras, ph.accent);
       const b = document.createElement('button'); b.className='ph'; b.type='button';
       b.innerHTML = svg + '<div class="lab">'+label(moras.length, ph.accent)+'</div>';
       b.title = title(moras.length, ph.accent);
@@ -256,6 +288,111 @@ async function speakPhrase(s, pi, btn){
   q.accent_phrases = [s.query.accent_phrases[pi]];
   await speak(q, btn);
 }
+
+// ---------- revision ----------
+// Chaque syntagme analyse est memorise. La cle inclut l'accent, donc deux mots
+// de meme lecture mais d'accent different (橋 / 端) restent deux entrees ; la
+// phrase d'origine, affichee comme contexte, permet de les distinguer — sans
+// elle la question serait sans reponse, VOICEVOX ne rendant pas les kanji.
+const STORE = 'pitch-revision-v1';
+let deck = [], qorder = [], qi = 0, qscore = 0, qcur = null;
+
+function loadDeck(){
+  try{ deck = JSON.parse(localStorage.getItem(STORE) || '[]'); }catch(_){ deck = []; }
+  if(!Array.isArray(deck)) deck = [];
+}
+function saveDeck(){ try{ localStorage.setItem(STORE, JSON.stringify(deck)); }catch(_){} }
+
+function collect(){
+  for(const s of sentences){
+    s.phrases.forEach((ph, idx) => {
+      const moras = ph.moras.map(m => kata2hira(m.text));
+      if(moras.length < 2) return;                 // une seule more : rien a deviner
+      const key = moras.join('') + '|' + ph.accent;
+      const it = deck.find(d => d.key === key);
+      if(it){ it.sent = s.text; it.idx = idx; }
+      else deck.push({key, moras, accent: ph.accent, sent: s.text, idx, ok:0, ko:0});
+    });
+  }
+  saveDeck(); refreshDeck();
+}
+function refreshDeck(){
+  const n = deck.length;
+  $('revcount').textContent = n ? '— ' + n + ' syntagme' + (n>1?'s':'') + ' en réserve' : '';
+  $('revempty').hidden = n > 0;
+  $('revstart').hidden = n === 0;
+  $('revreset').hidden = n === 0;
+}
+// Les ratages d'abord, puis les moins vus. Vingt questions au plus.
+function pickOrder(){
+  return deck.slice()
+    .sort((a,b) => (b.ko-b.ok)-(a.ko-a.ok) || (a.ok+a.ko)-(b.ok+b.ko))
+    .slice(0, 20);
+}
+function choicesFor(it){
+  const n = it.moras.length;
+  if(n + 1 <= 6){ const all=[]; for(let a=0;a<=n;a++) all.push(a); return all; }
+  const set = new Set([it.accent]);
+  while(set.size < 5) set.add(Math.max(0, Math.min(n, it.accent + Math.floor(Math.random()*7) - 3)));
+  return [...set].sort((a,b)=>a-b);
+}
+function showQ(){
+  qcur = qorder[qi];
+  $('qprog').textContent = 'Question ' + (qi+1) + ' sur ' + qorder.length + ' · ' + qscore + ' juste' + (qscore>1?'s':'');
+  $('qsent').textContent = qcur.sent;
+  $('qread').textContent = qcur.moras.join('');
+  $('qreveal').hidden = true;
+  const box = $('qchoices'); box.innerHTML = ''; box.hidden = false;
+  for(const a of choicesFor(qcur)){
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = '[' + a + ']';
+    b.onclick = () => answer(a);
+    box.appendChild(b);
+  }
+}
+function answer(a){
+  const good = (a === qcur.accent);
+  good ? (qcur.ok++, qscore++) : qcur.ko++;
+  saveDeck();
+  $('qchoices').hidden = true;
+  $('qcurve').innerHTML = '<div class="ph">' + curveSVG(qcur.moras, qcur.accent) +
+      '<div class="lab">' + label(qcur.moras.length, qcur.accent) + '</div></div>';
+  const v = $('qverdict');
+  v.textContent = good ? 'Juste.' : "Non, c'était [" + qcur.accent + '].';
+  v.className = 'msg' + (good ? '' : ' err');
+  $('qreveal').hidden = false;
+}
+function endQuiz(){
+  $('quiz').hidden = true; $('revhome').hidden = false;
+  refreshDeck();
+  if(qorder.length) msg('Révision terminée : ' + qscore + ' / ' + qorder.length + '.');
+}
+$('revstart').onclick = () => {
+  qorder = pickOrder(); qi = 0; qscore = 0;
+  if(!qorder.length) return;
+  $('revhome').hidden = true; $('quiz').hidden = false;
+  showQ();
+};
+$('revreset').onclick = () => {
+  if(!confirm('Vider la liste de révision ?')) return;
+  deck = []; saveDeck(); refreshDeck();
+};
+$('qnext').onclick = () => { if(++qi >= qorder.length) endQuiz(); else showQ(); };
+$('qquit').onclick = endQuiz;
+// On resynthetise depuis la phrase d'origine : c'est le seul moyen d'obtenir
+// exactement l'accent memorise, la lecture seule pouvant s'analyser autrement.
+$('qhear').onclick = async () => {
+  const btn = $('qhear'), old = btn.textContent;
+  try{
+    btn.disabled = true; btn.textContent = '…';
+    const q = await queryFor(qcur.sent);
+    const one = JSON.parse(JSON.stringify(q));
+    one.accent_phrases = [q.accent_phrases[qcur.idx] || q.accent_phrases[0]];
+    await playBlob(await vv('/synthesis', {method:'POST', params:{speaker}, body:one, raw:true}));
+  }catch(e){ $('qverdict').textContent = 'Lecture impossible : ' + e.message; }
+  finally{ btn.disabled = false; btn.textContent = old; }
+};
+loadDeck(); refreshDeck();
 
 // ---------- arbitrage du micro ----------
 // Sur iOS, la dictee et getUserMedia ne peuvent pas tenir le micro ensemble.
