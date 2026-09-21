@@ -54,7 +54,9 @@ textarea{width:100%; font:inherit; font-size:1.2rem; padding:12px 14px; border-r
 .row{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}
 .accent{display:flex; flex-wrap:wrap; gap:14px 18px; background:var(--card);
   border:1px solid var(--line); border-radius:16px; padding:16px 14px; min-height:90px}
-.phrase{display:flex; flex-direction:column; align-items:flex-start}
+.phrase{display:flex; flex-direction:column; align-items:flex-start; border-radius:10px; padding:2px 4px}
+.phrase.alt{cursor:pointer}
+.phrase.alt:hover{background:var(--bg)}
 .phrase svg{display:block; overflow:visible}
 .ptype{font-size:.78rem; color:var(--muted); margin-top:2px}
 .phrase.unknown .ptype{color:var(--shu)}
@@ -71,7 +73,7 @@ textarea{width:100%; font:inherit; font-size:1.2rem; padding:12px 14px; border-r
 <main>
   <h1>Parler, transcrire, voir l'accent</h1>
   <p class="lede">Dites une phrase en japonais : elle est transcrite, puis l'accent tonal attendu (Tokyo) est affiché mora par mora, avec votre courbe de voix en regard.</p>
-  <p class="status" id="status">Chargement des dictionnaires…</p>
+  <p class="status" id="status">Chargement du dictionnaire (≈ 1 Mo)…</p>
 
   <div class="rec">
     <button id="talk"><span class="dot"></span><span id="talkLabel">Parler</span></button>
@@ -96,104 +98,152 @@ textarea{width:100%; font:inherit; font-size:1.2rem; padding:12px 14px; border-r
   <div class="notes">
     <h2>Limites de ce prototype</h2>
     <p>L'alignement répartit les mores uniformément dans le temps : c'est une approximation, pas un vrai alignement forcé. Les mots composés, les conjugaisons rares et les mots absents du dictionnaire (marqués en rouge) peuvent être faux.</p>
-    <p>La dictée tend à écrire du japonais correct, et la lecture choisie pour un kanji peut être la mauvaise : corrigez le texte au besoin, puis relancez l'analyse.</p>
-    <p>Accents : dictionnaire Kanjium (CC BY-SA 4.0). Découpage : kuromoji.js.</p>
+    <p>La dictée tend à écrire du japonais correct, et la lecture choisie pour un kanji peut être la mauvaise : touchez un groupe marqué « autres lectures » pour en changer, ou corrigez le texte puis relancez l'analyse.</p>
+    <p>Accents : dictionnaire Kanjium (CC BY-SA 4.0). Lectures préférées et types de verbes précalculés avec kuromoji (IPADIC).</p>
   </div>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
 <script>
-// ---- Cœur : mores, dictionnaire d'accents, groupes accentuels ----
-const SMALL = new Set([...'ゃゅょぁぃぅぇぉゎ']);
-function toHira(s){ return (s||'').replace(/[\u30a1-\u30f6]/g, c=>String.fromCharCode(c.charCodeAt(0)-0x60)); }
-function splitMorae(h){ const out=[]; for(const c of h){ if(SMALL.has(c) && out.length) out[out.length-1]+=c; else out.push(c); } return out; }
+// ===== Cœur léger : dictionnaire compact + segmentation + déclinaison =====
+const SMALL=new Set([...'ゃゅょぁぃぅぇぉゎ']);
+function toHira(s){ return (s||'').replace(/[\u30a1-\u30f6]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60)); }
+function morae(h){ const o=[]; for(const c of h){ if(SMALL.has(c)&&o.length) o[o.length-1]+=c; else o.push(c);} return o; }
+const isKana=s=>/^[\u3040-\u309f\u30a0-\u30ffー]+$/.test(s);
 
-function buildIndex(text){
-  const idx=new Map();
+function parseDict(text){
+  const d=new Map();
   for(const line of text.split('\n')){
-    const p=line.split('\t'); if(p.length<3) continue;
-    const acc=parseInt(p[2],10); if(isNaN(acc)) continue;
-    const reading = p[1] || toHira(p[0]);
-    if(!idx.has(p[0])) idx.set(p[0], []);
-    idx.get(p[0]).push({reading, acc});
+    const p=line.split('\t'); if(p.length<2) continue;
+    const ents=p[1].split(',').map(x=>{const i=x.lastIndexOf(':'); return {r:x.slice(0,i)||p[0], a:+x.slice(i+1)};});
+    d.set(p[0],{ents, flag:p[2]||''});
   }
-  return idx;
+  for(const w of ['この','その','あの','どの']) if(!d.has(w)) d.set(w,{ents:[{r:w,a:0}],flag:''});
+  return d;
 }
-function lookup(idx, tok, reading){
-  const tryKey=(k, exact)=>{
-    const list=idx.get(k); if(!list) return null;
-    if(exact){ const m=list.find(e=>e.reading===reading); if(m) return m.acc; }
-    const m2=list.find(e=>e.reading[0]===reading[0]); return (m2||list[0]).acc;
-  };
-  let a=tryKey(tok.surface_form, true);
-  if(a!==null) return a;
-  if(tok.basic_form && tok.basic_form!=='*' && tok.basic_form!==tok.surface_form){
-    a=tryKey(tok.basic_form, false); if(a!==null) return a;
+
+// Mots-outils : noyau relatif (more après laquelle ça chute) ou null
+const FUNC={'が':null,'を':null,'に':null,'で':null,'へ':null,'と':null,'も':null,'の':null,'は':null,'や':null,'か':null,
+ 'ね':null,'よ':null,'な':null,'から':null,'まで':null,'より':null,'けど':null,'けれど':null,'ので':null,'のに':null,'って':null,
+ 'だけ':null,'しか':null,'など':null,'には':null,'では':null,'とは':null,'でも':null,'にも':null,'へは':null,
+ 'です':1,'でした':2,'でしょう':2,'だ':null,'だった':1,'じゃない':null,
+ 'いる':null,'います':2,'いました':3,'いません':3,'いた':null,'いない':null,'いて':null,
+ 'ください':3,'する':null,'します':2,'しました':3,'しません':3,'した':null,'して':null,'しない':null};
+
+const U2I={う:'い',く:'き',ぐ:'ぎ',す:'し',つ:'ち',ぬ:'に',ぶ:'び',む:'み',る:'り'};
+const U2A={う:'わ',く:'か',ぐ:'が',す:'さ',つ:'た',ぬ:'な',ぶ:'ば',む:'ま',る:'ら'};
+const TE={う:'って',つ:'って',る:'って',く:'いて',ぐ:'いで',す:'して',ぬ:'んで',ぶ:'んで',む:'んで'};
+const MASU={'ます':1,'ました':2,'ません':2,'ましょう':2,'ませんでした':2};
+// règles : [suffixe de surface, suffixe du dictionnaire, drapeaux acceptés, forme]
+const RULES=[];
+for(const u in U2I){
+  const fl=['v5'];
+  for(const m in MASU) RULES.push([U2I[u]+m,u,fl,'masu:'+m]);
+  RULES.push([TE[u],u,fl,'te']); RULES.push([TE[u].replace(/て$/,'た').replace(/で$/,'だ'),u,fl,'te']);
+  RULES.push([U2A[u]+'ない',u,fl,'nai']); RULES.push([U2A[u]+'なかった',u,fl,'nai']);
+}
+for(const m in MASU) RULES.push(['き'+m,'く',['v5k-s'],'masu:'+m]);
+RULES.push(['って','く',['v5k-s'],'te'],['った','く',['v5k-s'],'te'],['かない','く',['v5k-s'],'nai']);
+for(const m in MASU) RULES.push([m,'る',['v1'],'masu:'+m]);
+RULES.push(['て','る',['v1'],'te1'],['た','る',['v1'],'te1'],['ない','る',['v1'],'nai'],['なかった','る',['v1'],'nai']);
+for(const m in MASU) RULES.push(['し'+m,'する',['vs'],'masu:'+m]);
+RULES.push(['して','する',['vs'],'te'],['した','する',['vs'],'te'],['しない','する',['vs'],'nai']);
+for(const u in U2I){ RULES.push([U2I[u]+'たい',u,['v5'],'tai'],[U2I[u]+'たかった',u,['v5'],'tai']); }
+RULES.push(['きたい','く',['v5k-s'],'tai'],['たい','る',['v1'],'tai'],['たかった','る',['v1'],'tai'],['したい','する',['vs'],'tai']);
+RULES.push(['かった','い',['adj'],'adj'],['くない','い',['adj'],'adj'],['くて','い',['adj'],'adj'],['く','い',['adj'],'adj'],['ければ','い',['adj'],'adj']);
+
+function conjKernel(form, acc, reading, surfSuf){
+  if(form.startsWith('masu:')){ const m=form.slice(5); const pre=reading.slice(0, reading.length-m.length); return morae(pre).length+MASU[m]; }
+  if(form==='tai'){ const i=reading.lastIndexOf('た'); return morae(reading.slice(0,i)).length+1; }
+  if(acc===0) return null;
+  const n=morae(reading).length;
+  if(form==='te') return Math.min(acc,n);
+  if(form==='te1'||form==='adj') return Math.max(1,acc-1);
+  if(form==='nai'){ const i=reading.lastIndexOf('な'); return morae(reading.slice(0,i)).length; }
+  return Math.min(acc,n);
+}
+
+function candidates(dict, s){
+  const c=[];
+  const e=dict.get(s); if(e) c.push({kind:'word', s, ents:e.ents, flag:e.flag, verb:!!e.flag&&e.flag!=='adj'});
+  for(const [ss,ds,fl,form] of RULES){
+    if(s.length<=ss.length || !s.endsWith(ss)) continue;
+    const w=s.slice(0,s.length-ss.length)+ds, de=dict.get(w);
+    if(!de || !fl.includes(de.flag)) continue;
+    const ents=de.ents.map(x=>({r:x.r.slice(0,x.r.length-ds.length)+ss, a:x.a, form}));
+    c.push({kind:'conj', s, ents, verb:de.flag!=='adj', base:w, form});
   }
-  const hs=toHira(tok.surface_form); if(hs!==tok.surface_form){ a=tryKey(hs,true); if(a!==null) return a; }
-  return null;
+  if(s in FUNC) c.push({kind:'func', s});
+  return c;
 }
-// Auxiliaires qui portent leur propre chute (position de la more après laquelle ça tombe)
-const AUX_KERNEL = {'ます':1,'まし':2,'ませ':2,'ましょ':2,'ました':2,'ません':2,'です':1,'でし':2,'でしょ':2,'でした':2,'ください':3};
-const ATTACH_POS = new Set(['助詞','助動詞']);
-function isAttached(t){
-  return ATTACH_POS.has(t.pos) || t.pos_detail_1==='接尾' || (t.pos_detail_1==='非自立' && t.pos!=='名詞');
-}
-function analyze(tokens, idx){
-  const phrases=[]; let cur=null, prefixPending=false;
-  for(const t of tokens){
-    if(t.pos==='記号'){ cur=null; continue; }
-    const reading = toHira(t.reading && t.reading!=='*' ? t.reading : t.surface_form);
-    const morae = splitMorae(reading);
-    const startNew = !cur || (!isAttached(t) && !prefixPending);
-    if(startNew){ cur={tokens:[], morae:[], kernel:null, unknown:false, surface:'', headPos:t.pos}; phrases.push(cur); }
-    const offset = cur.morae.length;
-    if(startNew || prefixPending){
-      cur.headLen = offset + morae.length;
-      const acc = lookup(idx, t, reading);
-      if(acc===null){ if(t.pos!=='接頭詞') cur.unknown=true; }
-      else if(acc>0 && cur.kernel===null) cur.kernel = offset + Math.min(acc, morae.length);
-    } else if(AUX_KERNEL[t.surface_form]!==undefined && (cur.kernel===null || cur.headPos==='動詞')){
-      cur.kernel = offset + AUX_KERNEL[t.surface_form];
+
+function segment(dict, text){
+  const toks=[]; let i=0;
+  const clean=text.normalize('NFKC');
+  while(i<clean.length){
+    const ch=clean[i];
+    if(/[\s、。，．！？!?,.「」『』（）()・…]/.test(ch)){ toks.push({kind:'break'}); i++; continue; }
+    let best=null; const prev=toks.length?toks[toks.length-1]:null, afterWord=prev&&prev.kind!=='break';
+    for(let L=Math.min(12,clean.length-i); L>=1; L--){
+      const cs=candidates(dict, clean.slice(i,i+L)); if(!cs.length) continue;
+      const func=cs.find(x=>x.kind==='func');
+      const conts=cs.filter(x=>x.kind!=='func').sort((a,b)=>(a.kind==='conj'?0:1)-(b.kind==='conj'?0:1));
+      const content=conts.length?{kind:conts[0].kind, s:conts[0].s, verb:conts[0].verb, ents:conts.flatMap(x=>x.ents)}:null;
+      let pick = content || func;
+      if(func && afterWord && (!content || isKana(content.s))) pick=func;
+      if(!best || L>best.s.length) best=pick;
+      else if(best.kind!=='func' && pick.kind==='func' && afterWord && isKana(best.s) && L>=1 && !best.s.match(/[\u4e00-\u9fff]/)){ /* garde le plus long */ }
+      if(best && best.s.length===L) break;
     }
-    prefixPending = t.pos==='接頭詞';
-    cur.tokens.push(t.surface_form); cur.surface+=t.surface_form; cur.morae.push(...morae);
+    if(!best){
+      if(prev && prev.kind==='unk'){ prev.s+=ch; } else toks.push({kind:'unk', s:ch});
+      i++; continue;
+    }
+    toks.push(best); i+=best.s.length;
   }
+  return toks;
+}
+
+function analyze(dict, text, choice){
+  choice=choice||{};
+  const toks=segment(dict, text), phrases=[]; let cur=null, pos=0;
+  toks.forEach((t,ti)=>{
+    if(t.kind==='break'){ cur=null; return; }
+    if(t.kind==='func'){
+      const ms=morae(t.s);
+      if(!cur){ cur={surface:'',morae:[],kernel:null,unknown:false,headLen:0,alts:0,key:ti}; phrases.push(cur); }
+      if(FUNC[t.s]!==null && cur.kernel===null) cur.kernel=cur.morae.length+FUNC[t.s];
+      cur.surface+=t.s; cur.morae.push(...ms); return;
+    }
+    cur={surface:'',morae:[],kernel:null,unknown:false,headLen:0,alts:0,key:ti}; phrases.push(cur);
+    if(t.kind==='unk'){
+      cur.unknown=true; cur.surface=t.s;
+      cur.morae = isKana(t.s) ? morae(toHira(t.s)) : [...t.s];
+      cur.headLen=cur.morae.length; return;
+    }
+    const k=Math.min(choice[ti]||0, t.ents.length-1), e=t.ents[k];
+    const ms=morae(toHira(e.r));
+    cur.alts=t.ents.length; cur.choice=k; cur.reading=e.r;
+    cur.kernel = e.form ? conjKernel(e.form, e.a, toHira(e.r)) : (e.a>0?Math.min(e.a,ms.length):null);
+    cur.surface=t.s; cur.morae=ms; cur.headLen=ms.length;
+  });
   for(const p of phrases){
-    const n=p.morae.length, k=p.kernel;
-    p.pattern = p.morae.map((_,i)=>{
-      if(k===1) return i===0?'H':'L';
-      if(i===0) return 'L';
-      if(k===null) return 'H';
-      return i<k ? 'H' : 'L';
-    });
+    const k=p.kernel;
+    p.pattern=p.morae.map((_,i)=> k===1 ? (i===0?'H':'L') : i===0 ? 'L' : k===null ? 'H' : (i<k?'H':'L'));
   }
   return phrases;
 }
 (function(){
   const $=id=>document.getElementById(id);
-  let tokenizer=null, idx=null, pendingAnalyze=false;
-
+  let dict=null, pendingAnalyze=false, choice={}, lastText='';
   function status(t, err){ const s=$('status'); s.textContent=t; s.classList.toggle('err',!!err); }
   function msg(t, err){ const m=$('msg'); m.textContent=t; m.classList.toggle('err',!!err); }
-  function ready(){ return tokenizer && idx; }
-  function checkReady(){
-    if(ready()){ status('Prêt. Le premier chargement est mis en cache par le navigateur.'); if(pendingAnalyze){pendingAnalyze=false; runAnalyze();} }
-  }
-
-  // ---- Chargement ----
-  kuromoji.builder({dicPath:'https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/'}).build((err,tk)=>{
-    if(err){ status("Impossible de charger le découpeur japonais (kuromoji). Vérifiez la connexion.", true); return; }
-    tokenizer=tk; checkReady();
-  });
   (async()=>{
-    const urls=['./accents.txt',
-      'https://cdn.jsdelivr.net/gh/mifunetoshiro/kanjium@master/data/source_files/raw/accents.txt',
-      'https://raw.githubusercontent.com/mifunetoshiro/kanjium/master/data/source_files/raw/accents.txt'];
-    for(const u of urls){
-      try{ const r=await fetch(u); if(!r.ok) continue; const t=await r.text(); if(t.length<100000) continue;
-        idx=buildIndex(t); checkReady(); return; }catch(_){}
-    }
-    status("Impossible de charger le dictionnaire d'accents.", true);
+    try{
+      const t0=performance.now();
+      const r=await fetch('./dict.txt'); if(!r.ok) throw new Error(r.status);
+      dict=parseDict(await r.text());
+      status('Prêt ('+((performance.now()-t0)/1000).toFixed(1)+' s).');
+      if(pendingAnalyze){ pendingAnalyze=false; runAnalyze(); }
+    }catch(e){ status("Impossible de charger dict.txt : vérifiez qu'il est bien à côté d'index.html dans le dépôt.", true); }
   })();
 
   // ---- Affichage de l'accent ----
@@ -223,19 +273,27 @@ function analyze(tokens, idx){
         s+=`<text x="${q[0]}" y="${YT}" text-anchor="middle" font-size="19" fill="${ink}" font-family="Zen Kaku Gothic New, Hiragino Sans, sans-serif">${p.morae[i]}</text>`;
       });
       s+='</svg>';
-      const d=document.createElement('div'); d.className='phrase'+(p.unknown?' unknown':'');
-      d.innerHTML=s+`<div class="ptype">${p.surface} · ${p.unknown?'mot inconnu, accent incertain':typeLabel(p)}</div>`;
+      const d=document.createElement('div'); d.className='phrase'+(p.unknown?' unknown':'')+(p.alts>1?' alt':'');
+      const more = p.alts>1 ? ` · autres lectures (${p.choice+1}/${p.alts})` : '';
+      d.innerHTML=s+`<div class="ptype">${p.surface} · ${p.unknown?'mot inconnu, accent incertain':typeLabel(p)}${more}</div>`;
+      if(p.alts>1){
+        d.setAttribute('role','button'); d.tabIndex=0;
+        const next=()=>{ choice[p.key]=(p.choice+1)%p.alts; runAnalyze(true); };
+        d.addEventListener('click',next);
+        d.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); next(); } });
+      }
       box.appendChild(d);
     }
   }
-  function runAnalyze(){
+  function runAnalyze(keep){
     const t=$('text').value.trim();
     if(!t){ renderAccent([]); return; }
-    if(!ready()){ pendingAnalyze=true; status('Analyse en attente du chargement des dictionnaires…'); return; }
-    lastPhrases=analyze(tokenizer.tokenize(t), idx);
+    if(!dict){ pendingAnalyze=true; status('Analyse en attente du dictionnaire…'); return; }
+    if(t!==lastText || keep!==true){ if(t!==lastText) choice={}; lastText=t; }
+    lastPhrases=analyze(dict, t, choice);
     renderAccent(lastPhrases); drawCompare();
   }
-  $('analyzeBtn').addEventListener('click', runAnalyze);
+  $('analyzeBtn').addEventListener('click', ()=>runAnalyze());
 
   // ---- Audio + YIN ----
   let ac=null, analyser, sr, buf, dArr, cmnd, tauMin, tauMax, stream=null, src=null, recording=false, frames=[], rec=null, finalized=true, transcript='';
