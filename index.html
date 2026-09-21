@@ -102,6 +102,23 @@ textarea{width:100%; font:inherit; font-size:1.2rem; padding:12px 14px; border-r
     <p>Accents : dictionnaire Kanjium (CC BY-SA 4.0). Lectures préférées et types de verbes précalculés avec kuromoji (IPADIC).</p>
   </div>
 </main>
+<!-- Diagnostic : balise separee, pour survivre a une erreur de syntaxe du script principal -->
+<script>
+(function(){
+  var show=function(t){ var s=document.getElementById('status'); if(s){ s.textContent=t; s.className='status err'; } };
+  window.addEventListener('error', function(e){
+    show('Erreur JS : '+(e.message||e.error)+'  ['+(e.filename||'?').split('/').pop()+':'+e.lineno+']');
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    var r=e.reason; show('Promesse rejetee : '+((r&&(r.message||r.name))||r));
+  });
+  setTimeout(function(){
+    var s=document.getElementById('status');
+    if(s && /Chargement du dictionnaire/.test(s.textContent))
+      show('Bloque 20 s sur le chargement. UA='+navigator.userAgent.slice(0,90));
+  }, 20000);
+})();
+</script>
 <script>
 // ===== Cœur léger : dictionnaire compact + segmentation + déclinaison =====
 const SMALL=new Set([...'ゃゅょぁぃぅぇぉゎ']);
@@ -237,13 +254,25 @@ function analyze(dict, text, choice){
   function status(t, err){ const s=$('status'); s.textContent=t; s.classList.toggle('err',!!err); }
   function msg(t, err){ const m=$('msg'); m.textContent=t; m.classList.toggle('err',!!err); }
   (async()=>{
+    const t0=performance.now();
     try{
-      const t0=performance.now();
-      const r=await fetch('./dict.txt'); if(!r.ok) throw new Error(r.status);
-      dict=parseDict(await r.text());
-      status('Prêt ('+((performance.now()-t0)/1000).toFixed(1)+' s).');
+      status('Téléchargement de dict.txt…');
+      const ctl = ('AbortController' in window) ? new AbortController() : null;
+      const killer = setTimeout(()=>{ try{ ctl && ctl.abort(); }catch(_){} }, 30000);
+      const r = await fetch('./dict.txt', ctl ? {signal:ctl.signal} : undefined);
+      if(!r.ok) throw new Error('HTTP '+r.status+' sur '+r.url);
+      status('Lecture du flux…');
+      const txt = await r.text();
+      clearTimeout(killer);
+      status('Analyse de '+Math.round(txt.length/1000)+' k caractères…');
+      await new Promise(res=>setTimeout(res,0));   // laisse l'UI se repeindre avant le parsing bloquant
+      dict = parseDict(txt);
+      status('Prêt ('+((performance.now()-t0)/1000).toFixed(1)+' s, '+dict.size+' entrées).');
       if(pendingAnalyze){ pendingAnalyze=false; runAnalyze(); }
-    }catch(e){ status("Impossible de charger dict.txt : vérifiez qu'il est bien à côté d'index.html dans le dépôt.", true); }
+    }catch(e){
+      const d=((performance.now()-t0)/1000).toFixed(1);
+      status('Échec après '+d+' s — '+(e.name==='AbortError' ? 'délai de 30 s dépassé' : (e.message||e))+' | origine : '+location.origin, true);
+    }
   })();
 
   // ---- Affichage de l'accent ----
