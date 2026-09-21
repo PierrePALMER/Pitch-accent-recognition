@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tester YIN au micro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eef1f5; --ink:#1f2a44; --muted:#5d6784; --line:#cfd5e0;
+  --shu:#e0452b; --panel:#141a2c; --btn:#ffffff; --btn-ink:#1f2a44;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#171d33; --ink:#e7eaf2; --muted:#9aa3bd; --line:#2c3552;
+    --panel:#0d1222; --btn:#222a4a; --btn-ink:#e7eaf2;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#171d33; --ink:#e7eaf2; --muted:#9aa3bd; --line:#2c3552;
+  --panel:#0d1222; --btn:#222a4a; --btn-ink:#e7eaf2;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+  line-height:1.55;
+}
+main{max-width:760px; margin:0 auto; padding:28px 18px 48px}
+h1{font-size:1.9rem; line-height:1.15; margin:0 0 6px; font-weight:700; letter-spacing:-.01em}
+.lede{color:var(--muted); margin:0 0 20px; max-width:60ch}
+.scope{
+  position:relative; height:clamp(240px,44vh,380px);
+  background:var(--panel); border-radius:16px; overflow:hidden;
+}
+.scope canvas{position:absolute; inset:0; width:100%; height:100%; display:block}
+.readout{display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; margin:14px 2px 18px}
+.hz{font-size:2.6rem; font-weight:700; font-variant-numeric:tabular-nums; line-height:1}
+.hz small{font-size:1rem; font-weight:500; color:var(--muted); margin-left:4px}
+.meta{color:var(--muted); font-variant-numeric:tabular-nums}
+.meta b{color:var(--ink); font-weight:500}
+.row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+button{
+  font:inherit; font-size:.95rem; cursor:pointer;
+  border:1px solid var(--line); background:var(--btn); color:var(--btn-ink);
+  padding:10px 16px; border-radius:999px;
+}
+button:focus-visible{outline:3px solid var(--shu); outline-offset:2px}
+button.primary{background:var(--shu); border-color:var(--shu); color:#fff; font-weight:500}
+button[aria-pressed="true"]{border-color:var(--shu); box-shadow:inset 0 0 0 1px var(--shu)}
+.pairs{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:6px 0 10px}
+.pair{
+  text-align:left; border-radius:14px; padding:12px 14px;
+  display:flex; flex-direction:column; gap:2px;
+}
+.pair .jp{font-size:1.5rem; font-weight:700; line-height:1.2}
+.pair .kana{font-size:1rem}
+.pair .type{font-size:.85rem; color:var(--muted)}
+.msg{min-height:1.4em; color:var(--muted); font-size:.92rem; margin:4px 2px 0}
+.msg.err{color:var(--shu)}
+h2{font-size:1.25rem; margin:36px 0 8px}
+p{max-width:62ch}
+.diffwrap{position:relative; height:170px; border:1px solid var(--line); border-radius:12px; overflow:hidden}
+.diffwrap canvas{width:100%; height:100%; display:block}
+.caption{font-variant-numeric:tabular-nums; color:var(--muted); font-size:.92rem; margin:8px 2px 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Tester YIN au micro</h1>
+  <p class="lede">Parlez ou chantez : le spectrogramme défile, et la courbe rouge est la hauteur (F0) que YIN détecte en temps réel.</p>
+
+  <div class="scope" id="scope">
+    <canvas id="spec"></canvas>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div class="readout" aria-live="off">
+    <div class="hz" id="hz">—<small>Hz</small></div>
+    <div class="meta">Note <b id="note">—</b></div>
+    <div class="meta">Clarté <b id="clar">—</b></div>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="micBtn">Activer le micro</button>
+    <button id="freezeBtn" aria-pressed="false">Figer</button>
+    <button id="clearBtn">Effacer</button>
+  </div>
+  <p class="msg" id="msg">Pas de micro sous la main ? Écoutez les paires minimales ci-dessous (sur iPhone, désactivez le mode silencieux pour les entendre).</p>
+
+  <div class="pairs" id="pairs"></div>
+  <div class="row"><button id="glissBtn">Glissando 110 → 440 Hz</button></div>
+
+  <h2>Ce que YIN calcule</h2>
+  <p>Pour chaque délai τ, YIN mesure à quel point le signal diffère de sa propre copie décalée de τ. Quand la courbe plonge sous le seuil pointillé, le décalage correspond à une période complète de l'onde : la fréquence vaut alors 1/τ.</p>
+  <div class="diffwrap"><canvas id="diff"></canvas></div>
+  <p class="caption" id="diffCap">En attente de son.</p>
+</main>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const spec = $('spec'), overlay = $('overlay'), diff = $('diff');
+  const sctx = spec.getContext('2d'), octx = overlay.getContext('2d'), dctx = diff.getContext('2d');
+
+  const F_MIN = 60, F_MAX = 1600, THR = 0.15, GATE = 0.008, W = 1024;
+  let ac = null, analyser, sr, timeBuf, freqBuf, dArr, cmnd, tauMin, tauMax;
+  let micStream = null, micSrc = null, frozen = false, running = false;
+  let dpr = 1, SW = 0, SH = 0, stepPx = 2, rowBins = null, colImg = null, prevY = null;
+
+  // Colormap : fond du panneau → indigo → vermillon → or pâle
+  const stops = [[0,[13,18,34]],[.35,[52,48,120]],[.65,[190,60,70]],[.85,[240,120,60]],[1,[255,230,170]]];
+  const LUT = new Uint8Array(256*3);
+  for(let i=0;i<256;i++){
+    const v=i/255; let k=0; while(k<stops.length-2 && v>stops[k+1][0]) k++;
+    const [a,ca]=stops[k],[b,cb]=stops[k+1], t=(v-a)/(b-a);
+    for(let c=0;c<3;c++) LUT[i*3+c]=Math.round(ca[c]+(cb[c]-ca[c])*t);
+  }
+
+  function fToY(f){ return SH - Math.log(f/F_MIN)/Math.log(F_MAX/F_MIN)*SH; }
+
+  function computeRowBins(){
+    if(!sr || !SH) return;
+    rowBins = new Uint16Array(SH);
+    const binW = sr/analyser.fftSize;
+    for(let y=0;y<SH;y++){
+      const f = F_MIN*Math.pow(F_MAX/F_MIN, 1 - y/SH);
+      rowBins[y] = Math.min(analyser.frequencyBinCount-1, Math.round(f/binW));
+    }
+  }
+
+  function resize(){
+    dpr = Math.min(window.devicePixelRatio||1, 2);
+    const r = spec.getBoundingClientRect();
+    SW = Math.round(r.width*dpr); SH = Math.round(r.height*dpr);
+    spec.width = overlay.width = SW; spec.height = overlay.height = SH;
+    stepPx = Math.max(1, Math.round(2*dpr));
+    colImg = sctx.createImageData(stepPx, SH);
+    sctx.fillStyle = '#0d1222'; sctx.fillRect(0,0,SW,SH);
+    prevY = null;
+    drawGrid(); computeRowBins();
+    const d = diff.getBoundingClientRect();
+    diff.width = Math.round(d.width*dpr); diff.height = Math.round(d.height*dpr);
+    drawDiff(null);
+  }
+
+  function drawGrid(){
+    octx.clearRect(0,0,SW,SH);
+    octx.font = `${11*dpr}px "Zen Kaku Gothic New", system-ui, sans-serif`;
+    octx.textBaseline = 'bottom';
+    [100,200,300,400,800].forEach(f=>{
+      const y = Math.round(fToY(f))+.5;
+      octx.strokeStyle = 'rgba(255,255,255,.14)'; octx.lineWidth = 1;
+      octx.beginPath(); octx.moveTo(0,y); octx.lineTo(SW,y); octx.stroke();
+      octx.fillStyle = 'rgba(255,255,255,.5)';
+      octx.fillText(f+' Hz', 8*dpr, y-3*dpr);
+    });
+  }
+
+  function yin(start){
+    for(let tau=1; tau<=tauMax; tau++){
+      let s=0;
+      for(let i=0;i<W;i++){ const d=timeBuf[start+i]-timeBuf[start+i+tau]; s+=d*d; }
+      dArr[tau]=s;
+    }
+    cmnd[0]=1; let run=0;
+    for(let tau=1; tau<=tauMax; tau++){ run+=dArr[tau]; cmnd[tau] = run>0 ? dArr[tau]*tau/run : 1; }
+    let tau=-1;
+    for(let t=tauMin; t<tauMax; t++){
+      if(cmnd[t]<THR){ while(t+1<tauMax && cmnd[t+1]<cmnd[t]) t++; tau=t; break; }
+    }
+    if(tau<0) return null;
+    const a=cmnd[tau-1], b=cmnd[tau], c=cmnd[tau+1], den=a-2*b+c;
+    const better = den!==0 ? tau + (a-c)/(2*den) : tau;
+    return { f: sr/better, tau: better, clarity: 1-b };
+  }
+
+  function noteName(f){
+    const names=['Do','Do♯','Ré','Ré♯','Mi','Fa','Fa♯','Sol','Sol♯','La','La♯','Si'];
+    const m = Math.round(69+12*Math.log2(f/440));
+    return names[((m%12)+12)%12] + (Math.floor(m/12)-2);
+  }
+
+  function drawDiff(res, live){
+    const w=diff.width, h=diff.height, maxY=1.6;
+    const cs = getComputedStyle(document.documentElement);
+    const ink = cs.getPropertyValue('--ink').trim(), muted = cs.getPropertyValue('--muted').trim(), shu = cs.getPropertyValue('--shu').trim();
+    dctx.clearRect(0,0,w,h);
+    const yOf = v => h - Math.min(v,maxY)/maxY*(h-10*dpr) - 4*dpr;
+    dctx.setLineDash([4*dpr,4*dpr]); dctx.strokeStyle=muted; dctx.lineWidth=1*dpr;
+    dctx.beginPath(); dctx.moveTo(0,yOf(THR)); dctx.lineTo(w,yOf(THR)); dctx.stroke(); dctx.setLineDash([]);
+    if(!live || !tauMax) return;
+    dctx.strokeStyle=ink; dctx.lineWidth=1.5*dpr; dctx.beginPath();
+    for(let t=1;t<=tauMax;t++){ const x=t/tauMax*w, y=yOf(cmnd[t]); t===1?dctx.moveTo(x,y):dctx.lineTo(x,y); }
+    dctx.stroke();
+    if(res){
+      const x=res.tau/tauMax*w;
+      dctx.strokeStyle=shu; dctx.lineWidth=2*dpr;
+      dctx.beginPath(); dctx.moveTo(x,0); dctx.lineTo(x,h); dctx.stroke();
+      dctx.fillStyle=shu; dctx.beginPath(); dctx.arc(x,yOf(cmnd[Math.round(res.tau)]),4*dpr,0,Math.PI*2); dctx.fill();
+    }
+  }
+
+  function loop(){
+    requestAnimationFrame(loop);
+    if(frozen || !rowBins) return;
+    analyser.getFloatTimeDomainData(timeBuf);
+    analyser.getFloatFrequencyData(freqBuf);
+
+    const start = timeBuf.length - (W + tauMax + 2);
+    let rms=0; for(let i=0;i<W;i++){ const v=timeBuf[start+i]; rms+=v*v; } rms=Math.sqrt(rms/W);
+    const res = yin(start);
+    const voiced = res && rms>GATE && res.f>F_MIN && res.f<1000;
+
+    // Spectrogramme : décale d'un pas et dessine la nouvelle colonne
+    sctx.drawImage(spec, -stepPx, 0);
+    const lo=analyser.minDecibels, hi=analyser.maxDecibels, data=colImg.data;
+    for(let y=0;y<SH;y++){
+      let v=(freqBuf[rowBins[y]]-lo)/(hi-lo); v=v<0?0:v>1?1:v;
+      const li=(v*255|0)*3;
+      for(let x=0;x<stepPx;x++){ const p=(y*stepPx+x)*4; data[p]=LUT[li]; data[p+1]=LUT[li+1]; data[p+2]=LUT[li+2]; data[p+3]=255; }
+    }
+    sctx.putImageData(colImg, SW-stepPx, 0);
+
+    if(voiced){
+      const y=fToY(res.f), x=SW-stepPx/2;
+      sctx.strokeStyle='#ff5a3c'; sctx.lineWidth=3*dpr; sctx.lineCap='round';
+      sctx.beginPath();
+      if(prevY!==null && Math.abs(prevY-y)<SH*.12){ sctx.moveTo(x-stepPx,prevY); sctx.lineTo(x,y); }
+      else { sctx.moveTo(x,y); sctx.lineTo(x+.1,y); }
+      sctx.stroke();
+      prevY=y;
+      $('hz').innerHTML = res.f.toFixed(1)+'<small>Hz</small>';
+      $('note').textContent = noteName(res.f);
+      $('clar').textContent = Math.round(res.clarity*100)+' %';
+      $('diffCap').textContent = `Creux retenu : τ = ${(res.tau/sr*1000).toFixed(2)} ms, donc F0 = 1 / τ = ${res.f.toFixed(1)} Hz.`;
+    } else {
+      prevY=null;
+      $('hz').innerHTML = '—<small>Hz</small>'; $('note').textContent='—'; $('clar').textContent='—';
+      if(rms>GATE) $('diffCap').textContent = 'Son non voisé : aucun creux ne passe sous le seuil.';
+    }
+    drawDiff(voiced?res:null, rms>GATE);
+  }
+
+  function ensureAudio(){
+    if(!ac){
+      ac = new (window.AudioContext||window.webkitAudioContext)();
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0;
+      analyser.minDecibels = -100; analyser.maxDecibels = -25;
+      sr = ac.sampleRate;
+      timeBuf = new Float32Array(analyser.fftSize);
+      freqBuf = new Float32Array(analyser.frequencyBinCount);
+      tauMax = Math.floor(sr/F_MIN); tauMin = Math.floor(sr/1000);
+      dArr = new Float32Array(tauMax+2); cmnd = new Float32Array(tauMax+2);
+      computeRowBins();
+    }
+    if(ac.state==='suspended') ac.resume();
+    if(!running){ running=true; requestAnimationFrame(loop); }
+  }
+
+  function setMsg(t, err){ const m=$('msg'); m.textContent=t; m.classList.toggle('err', !!err); }
+
+  $('micBtn').addEventListener('click', async ()=>{
+    ensureAudio();
+    if(micStream){
+      micStream.getTracks().forEach(t=>t.stop()); micSrc.disconnect(); micStream=null;
+      $('micBtn').textContent='Activer le micro'; setMsg('Micro coupé.');
+      return;
+    }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setMsg("Ce navigateur intégré bloque le micro. Ouvrez ce lien directement dans Safari.", true);
+      return;
+    }
+    try{
+      // iOS 17+ : session audio lecture + enregistrement
+      try{ if(navigator.audioSession) navigator.audioSession.type='play-and-record'; }catch(_){}
+      micStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      // Safari peut suspendre le contexte pendant la demande d'autorisation
+      if(ac.state!=='running') await ac.resume();
+      micSrc = ac.createMediaStreamSource(micStream); micSrc.connect(analyser);
+      $('micBtn').textContent='Couper le micro';
+      setMsg('Dites « はし » avec des accents différents et comparez les courbes.');
+    }catch(e){
+      micStream=null;
+      if(e && e.name==='NotAllowedError'){
+        setMsg("Accès au micro refusé. Dans Safari : bouton aA > Réglages du site web > Micro > Autoriser, puis rechargez la page. Si vous êtes dans l'app Claude, ouvrez le lien dans Safari.", true);
+      } else {
+        setMsg("Micro indisponible ("+(e&&e.name||'erreur')+"). Ouvrez le lien dans Safari ou utilisez les sons de démo.", true);
+      }
+    }
+  });
+
+  $('freezeBtn').addEventListener('click', e=>{
+    frozen=!frozen; e.currentTarget.setAttribute('aria-pressed', frozen);
+    e.currentTarget.textContent = frozen ? 'Reprendre' : 'Figer';
+  });
+  $('clearBtn').addEventListener('click', ()=>{ sctx.fillStyle='#0d1222'; sctx.fillRect(0,0,SW,SH); prevY=null; });
+
+  // Paires minimales synthétisées (H = haut, L = bas, une valeur par more)
+  const PAIRS = [
+    {jp:'箸が', kana:'は↘しが', type:'Atamadaka : chute après la 1re more', p:'HLL'},
+    {jp:'橋が', kana:'はし↘が', type:'Odaka : chute sur la particule', p:'LHL'},
+    {jp:'端が', kana:'はしが',  type:'Heiban : pas de chute', p:'LHH'},
+  ];
+  function voice(schedule){
+    ensureAudio();
+    const osc=ac.createOscillator(), lp=ac.createBiquadFilter(), g=ac.createGain(), out=ac.createGain();
+    osc.type='sawtooth'; lp.type='lowpass'; lp.frequency.value=1400; out.gain.value=.5;
+    osc.connect(lp); lp.connect(g); g.connect(analyser); g.connect(out); out.connect(ac.destination);
+    const t0=ac.currentTime+.05, end=schedule(osc.frequency, t0);
+    g.gain.setValueAtTime(0,t0); g.gain.linearRampToValueAtTime(.35,t0+.03);
+    g.gain.setValueAtTime(.35,end-.06); g.gain.linearRampToValueAtTime(0,end);
+    osc.start(t0); osc.stop(end+.05);
+  }
+  const pairsEl=$('pairs');
+  PAIRS.forEach(pr=>{
+    const b=document.createElement('button'); b.className='pair';
+    b.innerHTML=`<span class="jp" lang="ja">${pr.jp}</span><span class="kana" lang="ja">${pr.kana}</span><span class="type">${pr.type}</span>`;
+    b.addEventListener('click', ()=>voice((fq,t0)=>{
+      const H=210, L=150, dur=.24, vals=[...pr.p].map(c=>c==='H'?H:L);
+      fq.setValueAtTime(vals[0],t0);
+      for(let i=1;i<vals.length;i++){
+        const t=t0+i*dur; fq.setValueAtTime(vals[i-1],t-.035); fq.linearRampToValueAtTime(vals[i],t+.035);
+      }
+      return t0+vals.length*dur;
+    }));
+    pairsEl.appendChild(b);
+  });
+  $('glissBtn').addEventListener('click', ()=>voice((fq,t0)=>{
+    fq.setValueAtTime(110,t0); fq.exponentialRampToValueAtTime(440,t0+1.6); return t0+1.7;
+  }));
+
+  new ResizeObserver(resize).observe($('scope'));
+  resize();
+})();
+</script>
+</body>
+</html>
