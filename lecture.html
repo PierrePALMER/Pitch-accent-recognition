@@ -257,12 +257,37 @@ async function speakPhrase(s, pi, btn){
   await speak(q, btn);
 }
 
-// ---------- dictee (conservee) ----------
+// ---------- arbitrage du micro ----------
+// Sur iOS, la dictee et getUserMedia ne peuvent pas tenir le micro ensemble.
+// Un seul mode a la fois, et on libere la session audio en sortant : sans le
+// suspend(), le contexte reste actif et la dictee refuse de redemarrer.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, dictationDead = false;
+let rec = null, dictationDead = false, mode = 'idle';   // idle | dicter | enregistrer
+
+function releaseMic(){
+  recording = false;
+  if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if(src){ try{ src.disconnect(); }catch(_){} src = null; }
+  if(ac && ac.state === 'running'){ try{ ac.suspend(); }catch(_){} }
+  $('hz').textContent = '—';
+}
+function stopDictation(){
+  if(rec){ try{ rec.abort(); }catch(_){} rec = null; }
+}
+function setMode(m){
+  mode = m;
+  $('dictate').textContent = m === 'dicter' ? 'Arrêter' : 'Dicter';
+  $('rec').textContent     = m === 'enregistrer' ? 'Terminer' : "S'enregistrer";
+  $('rec').classList.toggle('on', m === 'enregistrer');
+  $('dictate').disabled = (m === 'enregistrer');
+  $('rec').disabled     = (m === 'dicter');
+}
+
+// ---------- dictee ----------
 $('dictate').onclick = () => {
+  if(mode === 'dicter'){ stopDictation(); setMode('idle'); return; }
   if(!SR || dictationDead){ msg("Dictée indisponible ici : collez ou tapez le texte.", true); return; }
-  if(rec){ try{ rec.stop(); }catch(_){} rec=null; $('dictate').textContent='Dicter'; return; }
+  releaseMic();                     // rendre le micro avant de le redemander
   try{
     // continuous=true : sans lui, iOS coupe des la premiere pause et le
     // bouton se reinitialise seul, ce qui donne l'impression d'un bug.
@@ -278,14 +303,15 @@ $('dictate').onclick = () => {
       } else if(e.error!=='aborted') msg('Dictée : '+e.error, true);
     };
     rec.onend = () => {
-      rec=null; $('dictate').textContent='Dicter';
-      const t=$('text').value.trim();
+      rec = null;
+      if(mode === 'dicter') setMode('idle');
+      const t = $('text').value.trim();
       if(t && !dictationDead) msg('Dictée terminée — touchez « Analyser ».');
     };
     rec.start();
-    $('dictate').textContent='Arrêter';
+    setMode('dicter');
     msg('Parlez…');
-  }catch(e){ rec=null; msg('Dictée impossible : '+(e.name||e), true); }
+  }catch(e){ rec=null; setMode('idle'); msg('Dictée impossible : '+(e.name||e), true); }
 };
 
 $('go').onclick    = analyse;
@@ -341,25 +367,24 @@ function tick(){
   $('hz').textContent = ok ? Math.round(f)+' Hz' : '—';
 }
 $('rec').onclick = async () => {
-  const b=$('rec');
-  if(recording){
-    recording=false; b.classList.remove('on'); b.textContent="S'enregistrer"; $('hz').textContent='—';
-    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-    if(src){ src.disconnect(); src=null; }
-    draw();
-    return;
-  }
-  ensureAudio(); frames=[]; recording=true;
-  b.classList.add('on'); b.textContent='Terminer';
+  if(mode === 'enregistrer'){ releaseMic(); setMode('idle'); draw(); return; }
+  const wasDictating = !!rec;
+  stopDictation();                  // la dictee tient le micro : la couper d'abord
+  setMode('enregistrer');
+  ensureAudio(); frames = []; recording = true;
   requestAnimationFrame(tick);
   try{
+    // iOS met un instant a rendre la session audio apres une dictee
+    if(wasDictating) await new Promise(r => setTimeout(r, 400));
     stream = await navigator.mediaDevices.getUserMedia(
-      {audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-    if(ac.state!=='running') await ac.resume();
+      {audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+    if(ac.state !== 'running') await ac.resume();
     src = ac.createMediaStreamSource(stream); src.connect(analyser);
+    msg('Lisez la phrase à voix haute, puis touchez « Terminer ».');
   }catch(e){
-    msg('Micro indisponible : '+(e.name||e), true);
-    recording=false; b.classList.remove('on'); b.textContent="S'enregistrer";
+    msg('Micro indisponible : '+(e.name||e)+
+        (wasDictating ? ' — la dictée vient de le libérer, réessayez dans une seconde.' : ''), true);
+    releaseMic(); setMode('idle');
   }
 };
 
