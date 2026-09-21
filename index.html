@@ -362,21 +362,34 @@ function analyze(dict, text, choice){
 
   // ---- Dictée ----
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let dictationDead=false;   // vrai des qu'iOS a refuse le service : on n'insiste plus
 
   async function startTalk(){
     ensureAudio();
     frames=[]; transcript=''; finalized=false; recording=true;
     $('talk').classList.add('on'); $('talkLabel').textContent='Terminer';
-    msg(SR ? 'Parlez, puis appuyez sur « Terminer ».' : "La dictée n'est pas disponible ici : tapez la phrase ensuite, la courbe de voix est quand même enregistrée.");
-    if(SR){
+    msg((SR && !dictationDead)
+      ? 'Parlez, puis appuyez sur « Terminer ».'
+      : "Mode micro seul : la courbe de hauteur est enregistrée. Tapez la phrase ci-dessous pendant ou après l'enregistrement.");
+    if(SR && !dictationDead){
       try{
         rec=new SR(); rec.lang='ja-JP'; rec.continuous=true; rec.interimResults=true;
         rec.onresult=e=>{ let s=''; for(let i=0;i<e.results.length;i++) s+=e.results[i][0].transcript; transcript=s; $('text').value=s; };
         rec.onerror=e=>{
-          const m={ 'not-allowed':"Dictée refusée : autorisez la reconnaissance vocale pour ce site.",
-                    'service-not-allowed':"Dictée indisponible : activez-la dans Réglages > Général > Clavier > Dictée (et Siri).",
-                    'no-speech':"Aucune parole détectée.", 'network':"La dictée a besoin d'une connexion internet." }[e.error];
-          msg(m || ('Erreur de dictée : '+e.error), true);
+          // service-not-allowed : iOS refuse l'API Web Speech a Safari, independamment
+          // du micro (qui, lui, fonctionne). Rien a corriger cote page : on bascule
+          // definitivement en mode micro seul pour la session.
+          if(e.error==='service-not-allowed' || e.error==='not-allowed'){
+            dictationDead=true;
+            try{ rec && rec.abort(); }catch(_){} rec=null;
+            msg("Dictée refusée par le système : l'enregistrement de la hauteur continue. Tapez la phrase ci-dessous, puis « Analyser ce texte ».", true);
+            const ta=$('text'); if(ta && !ta.value) setTimeout(()=>{ try{ ta.focus(); }catch(_){} }, 400);
+            return;
+          }
+          const m={ 'no-speech':"Aucune parole détectée.",
+                    'network':"La dictée a besoin d'une connexion internet.",
+                    'aborted':"" }[e.error];
+          if(m!=='') msg(m || ('Erreur de dictée : '+e.error), true);
         };
         rec.onend=()=>{ if(!recording) finalize(); };
         rec.start();

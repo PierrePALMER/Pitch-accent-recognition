@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lecture accompagnée</title>
+<style>
+:root{
+  --bg:#eef1f5; --ink:#1f2a44; --muted:#5d6784; --line:#cfd5e0; --card:#fff;
+  --shu:#e0452b; --ai:#3b4a8c; --ok:#137a4b; --panel:#141a2c;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#171d33; --ink:#e7eaf2; --muted:#9aa3bd; --line:#2c3552; --card:#1e2542;
+  --ai:#9fb0ff; --ok:#5fd39b; --panel:#0d1222;
+}}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.55 "Hiragino Sans","Noto Sans JP",-apple-system,system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:18px 16px 56px}
+h1{font-size:1.35rem;margin:0 0 4px}
+.lede{color:var(--muted);margin:0 0 14px;font-size:.92rem}
+.status{font-size:.86rem;color:var(--muted);min-height:1.3em;margin:0 0 12px}
+.status.err{color:var(--shu)}
+.status.ok{color:var(--ok)}
+h2{font-size:1rem;margin:22px 0 8px}
+textarea{width:100%;font:inherit;font-size:1.15rem;padding:11px 13px;border-radius:12px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);resize:vertical;min-height:4.4em}
+select{font:inherit;padding:9px 11px;border-radius:10px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);max-width:100%}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);
+  color:var(--ink);padding:10px 15px;border-radius:999px}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--shu);border-color:var(--shu);color:#fff;font-weight:700}
+button.rec.on{background:var(--shu);border-color:var(--shu);color:#fff}
+.sent{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:12px 12px 10px;margin:0 0 12px}
+.sent-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.sent-text{font-size:1.08rem;word-break:break-all}
+.phrases{display:flex;flex-wrap:wrap;gap:12px 14px}
+.ph{flex:0 0 auto;border:0;background:transparent;padding:4px 6px;border-radius:10px;
+  cursor:pointer;text-align:center;display:flex;flex-direction:column;align-items:center}
+.ph:hover,.ph:focus-visible{background:var(--bg);outline:none}
+.ph svg{display:block;overflow:visible}
+.ph .lab{font-size:.72rem;color:var(--muted);margin-top:2px;white-space:nowrap}
+.hint{color:var(--muted);font-size:.84rem;margin:6px 2px 0}
+.cmp{position:relative;height:190px;background:var(--panel);border-radius:14px;overflow:hidden}
+.cmp canvas{width:100%;height:100%;display:block}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.82rem;color:var(--muted);margin-top:7px}
+.sw{display:inline-block;width:14px;height:4px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.msg{font-size:.86rem;color:var(--muted);min-height:1.2em;margin:8px 2px 0}
+.msg.err{color:var(--shu)}
+</style>
+</head>
+<body>
+<main>
+<h1>Lecture accompagnée</h1>
+<p class="lede">Collez un passage japonais : chaque syntagme est affiché avec son accent tonal, et se touche pour être entendu.</p>
+<p class="status" id="status">Connexion au moteur…</p>
+
+<div class="row">
+  <label for="spk" style="color:var(--muted);font-size:.88rem">Voix</label>
+  <select id="spk"><option>…</option></select>
+</div>
+
+<h2>Texte</h2>
+<textarea id="text" lang="ja" rows="3" placeholder="ここに本の一節を貼り付けてください"></textarea>
+<div class="row">
+  <button id="go" class="primary">Analyser</button>
+  <button id="dictate">Dicter</button>
+  <button id="clear">Effacer</button>
+</div>
+<p class="msg" id="msg"></p>
+
+<h2>Accent attendu</h2>
+<div id="out"><p class="hint">Rien pour l'instant.</p></div>
+
+<h2>Votre lecture face au modèle</h2>
+<div class="cmp"><canvas id="cmp"></canvas></div>
+<div class="legend">
+  <span><span class="sw" style="background:#ff5a3c"></span>Votre voix</span>
+  <span><span class="sw" style="background:#7f8fe0"></span>Modèle VOICEVOX</span>
+</div>
+<div class="row">
+  <button id="rec" class="rec">S'enregistrer</button>
+  <span class="hint" id="hz">—</span>
+</div>
+<p class="hint">Écoutez d'abord le modèle, puis lisez la même phrase à voix haute : les deux courbes se superposent à la même échelle.</p>
+</main>
+
+<script>
+const VV = '/voicevox';                 // meme origine : pas de CORS, pas de contenu mixte
+const $  = id => document.getElementById(id);
+const status = (t, c) => { const s=$('status'); s.textContent=t; s.className='status'+(c?' '+c:''); };
+const msg    = (t, c) => { const m=$('msg');    m.textContent=t; m.className='msg'+(c?' '+c:''); };
+
+// ---------- utilitaires ----------
+const kata2hira = s => s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0)-0x60));
+
+// Motif H/L de Tokyo. accent=0 ou accent=nb de mores -> reste haut jusqu'au bout.
+function pattern(n, accent){
+  const out=[];
+  for(let i=0;i<n;i++){
+    if(accent===1)      out.push(i===0?'H':'L');
+    else if(i===0)      out.push('L');
+    else if(accent===0) out.push('H');
+    else                out.push(i<accent?'H':'L');
+  }
+  return out;
+}
+// VOICEVOX encode « haut jusqu'a la fin » comme accent === nb de mores, pas 0 :
+// dans les deux cas rien ne chute a l'interieur du syntagme, donc on note [0].
+function label(n, accent){
+  if(accent===0 || accent===n) return '[0] 平板';
+  if(accent===1)               return '[1] 頭高';
+  return '['+accent+'] 中高';
+}
+function title(n, accent){
+  if(accent===0 || accent===n) return 'Reste haut jusqu\'au bout — écouter';
+  if(accent===1)               return 'Chute dès la 1re more — écouter';
+  return 'Chute après la more '+accent+' — écouter';
+}
+function splitSentences(t){
+  return t.replace(/\r/g,'').split(/(?<=[。！？!?\n])/)
+          .map(s=>s.trim()).filter(Boolean);
+}
+
+// ---------- moteur ----------
+async function vv(path, {method='GET', params, body, raw=false}={}){
+  const url = VV + path + (params ? '?'+new URLSearchParams(params) : '');
+  const r = await fetch(url, {
+    method,
+    headers: body ? {'Content-Type':'application/json'} : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if(!r.ok) throw new Error('HTTP '+r.status+' sur '+path);
+  return raw ? r.blob() : r.json();
+}
+
+let speaker = 2;
+
+(async () => {
+  try{
+    const v = await vv('/version');
+    const sp = await vv('/speakers');
+    const sel = $('spk'); sel.innerHTML='';
+    for(const p of sp) for(const st of p.styles){
+      const o=document.createElement('option');
+      o.value=st.id; o.textContent=p.name+' — '+st.name;
+      if(st.id===speaker) o.selected=true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => { speaker = +sel.value; cache.clear(); };
+    status('Moteur VOICEVOX '+v+' prêt.', 'ok');
+  }catch(e){
+    status("Moteur injoignable ("+e.message+"). VOICEVOX est-il lancé sur le PC ?", 'err');
+  }
+})();
+
+// ---------- analyse ----------
+let sentences = [];          // [{text, phrases:[{moras,accent,query}], query}]
+const cache = new Map();     // texte -> AudioQuery
+
+async function queryFor(text){
+  if(cache.has(text)) return cache.get(text);
+  const q = await vv('/audio_query', {method:'POST', params:{text, speaker}});
+  cache.set(text, q);
+  return q;
+}
+
+async function analyse(){
+  const raw = $('text').value.trim();
+  if(!raw){ $('out').innerHTML='<p class="hint">Rien pour l\'instant.</p>'; sentences=[]; draw(); return; }
+  const parts = splitSentences(raw);
+  $('go').disabled = true;
+  msg('Analyse de '+parts.length+' phrase'+(parts.length>1?'s':'')+'…');
+  sentences = [];
+  try{
+    for(const p of parts){
+      const q = await queryFor(p);
+      sentences.push({text:p, query:q, phrases:q.accent_phrases||[]});
+    }
+    render();
+    msg('');
+  }catch(e){
+    msg('Analyse impossible : '+e.message, true);
+  }finally{
+    $('go').disabled = false;
+  }
+}
+
+function render(){
+  const out = $('out'); out.innerHTML='';
+  if(!sentences.length){ out.innerHTML='<p class="hint">Rien pour l\'instant.</p>'; return; }
+  const cs = getComputedStyle(document.documentElement);
+  const ink=cs.getPropertyValue('--ink').trim(), ai=cs.getPropertyValue('--ai').trim(),
+        shu=cs.getPropertyValue('--shu').trim();
+
+  sentences.forEach((s, si) => {
+    const box = document.createElement('div'); box.className='sent';
+    const head = document.createElement('div'); head.className='sent-head';
+    const txt = document.createElement('div'); txt.className='sent-text'; txt.textContent=s.text;
+    const play = document.createElement('button'); play.textContent='▶ Écouter';
+    play.onclick = () => speak(s.query, play);
+    head.append(txt, play); box.appendChild(head);
+
+    const wrap = document.createElement('div'); wrap.className='phrases';
+    s.phrases.forEach((ph, pi) => {
+      const moras = ph.moras.map(m => kata2hira(m.text));
+      const pat = pattern(moras.length, ph.accent);
+      const CW=26, YH=9, YL=31, YT=56, w=moras.length*CW;
+      let svg = '<svg width="'+w+'" height="'+(YT+6)+'" viewBox="0 0 '+w+' '+(YT+6)+'">';
+      const pts = pat.map((v,i)=>[i*CW+CW/2, v==='H'?YH:YL]);
+      svg += '<polyline points="'+pts.map(q=>q.join(',')).join(' ')+
+             '" fill="none" stroke="'+ai+'" stroke-width="2.4" stroke-linejoin="round"/>';
+      pts.forEach((q,i)=>{
+        const kernel = ph.accent===i+1 && ph.accent!==moras.length;
+        svg += '<circle cx="'+q[0]+'" cy="'+q[1]+'" r="'+(kernel?5.5:4)+'" fill="'+(kernel?shu:ai)+'"/>';
+        svg += '<text x="'+q[0]+'" y="'+YT+'" text-anchor="middle" font-size="17" fill="'+ink+'">'+moras[i]+'</text>';
+      });
+      svg += '</svg>';
+
+      const b = document.createElement('button'); b.className='ph'; b.type='button';
+      b.innerHTML = svg + '<div class="lab">'+label(moras.length, ph.accent)+'</div>';
+      b.title = title(moras.length, ph.accent);
+      b.onclick = () => speakPhrase(s, pi, b);
+      wrap.appendChild(b);
+    });
+    box.appendChild(wrap);
+    out.appendChild(box);
+  });
+  draw();
+}
+
+// ---------- synthese ----------
+let audio = null;
+async function playBlob(blob){
+  if(audio){ audio.pause(); URL.revokeObjectURL(audio.src); }
+  audio = new Audio(URL.createObjectURL(blob));
+  await audio.play();
+}
+async function speak(query, btn){
+  const old = btn ? btn.textContent : null;
+  try{
+    if(btn){ btn.disabled=true; btn.textContent='…'; }
+    const blob = await vv('/synthesis', {method:'POST', params:{speaker}, body:query, raw:true});
+    await playBlob(blob);
+  }catch(e){ msg('Synthèse impossible : '+e.message, true); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent=old; } }
+}
+// Un seul syntagme : on renvoie la requete complete amputee des autres.
+async function speakPhrase(s, pi, btn){
+  const q = JSON.parse(JSON.stringify(s.query));
+  q.accent_phrases = [s.query.accent_phrases[pi]];
+  await speak(q, btn);
+}
+
+// ---------- dictee (conservee) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, dictationDead = false;
+$('dictate').onclick = () => {
+  if(!SR || dictationDead){ msg("Dictée indisponible ici : collez ou tapez le texte.", true); return; }
+  if(rec){ try{ rec.stop(); }catch(_){} rec=null; $('dictate').textContent='Dicter'; return; }
+  try{
+    rec = new SR(); rec.lang='ja-JP'; rec.interimResults=true;
+    rec.onresult = e => {
+      let s=''; for(let i=0;i<e.results.length;i++) s+=e.results[i][0].transcript;
+      $('text').value = s;
+    };
+    rec.onerror = e => {
+      if(e.error==='service-not-allowed' || e.error==='not-allowed'){
+        dictationDead = true;
+        msg("Dictée refusée par le système : collez ou tapez le texte.", true);
+      } else if(e.error!=='aborted') msg('Dictée : '+e.error, true);
+    };
+    rec.onend = () => { rec=null; $('dictate').textContent='Dicter'; };
+    rec.start();
+    $('dictate').textContent='Arrêter';
+    msg('Parlez…');
+  }catch(e){ rec=null; msg('Dictée impossible : '+(e.name||e), true); }
+};
+
+$('go').onclick    = analyse;
+$('clear').onclick = () => { $('text').value=''; sentences=[]; frames=[]; render(); };
+
+// ---------- micro + YIN ----------
+let ac=null, analyser, sr, buf, dArr, cmnd, tauMin, tauMax, stream=null, src=null,
+    recording=false, frames=[];
+const W=1024, THR=0.15, GATE=0.008;
+
+function ensureAudio(){
+  if(!ac){
+    ac = new (window.AudioContext||window.webkitAudioContext)();
+    analyser = ac.createAnalyser();
+    sr = ac.sampleRate;
+    // la fenetre doit contenir W + tauMax : on dimensionne d'apres la frequence reelle
+    tauMax = Math.floor(sr/70); tauMin = Math.floor(sr/800);
+    let fft = 2048; while(fft < W + tauMax + 2) fft *= 2;
+    analyser.fftSize = Math.min(fft, 32768);
+    buf = new Float32Array(analyser.fftSize);
+    dArr = new Float32Array(tauMax+2); cmnd = new Float32Array(tauMax+2);
+  }
+  if(ac.state==='suspended') ac.resume();
+}
+function yin(start){
+  for(let tau=1;tau<=tauMax;tau++){
+    let s=0; for(let i=0;i<W;i++){ const d=buf[start+i]-buf[start+i+tau]; s+=d*d; }
+    dArr[tau]=s;
+  }
+  cmnd[0]=1; let run=0;
+  for(let tau=1;tau<=tauMax;tau++){ run+=dArr[tau]; cmnd[tau]=run>0?dArr[tau]*tau/run:1; }
+  for(let t=tauMin;t<tauMax;t++){
+    if(cmnd[t]<THR){
+      while(t+1<tauMax && cmnd[t+1]<cmnd[t]) t++;
+      const a=cmnd[t-1],b=cmnd[t],c=cmnd[t+1],den=a-2*b+c;
+      return sr/(den?t+(a-c)/(2*den):t);
+    }
+  }
+  return null;
+}
+function tick(){
+  if(!recording) return;
+  requestAnimationFrame(tick);
+  if(!src) return;
+  analyser.getFloatTimeDomainData(buf);
+  const start = buf.length-(W+tauMax+2);
+  if(start < 0) return;
+  let rms=0; for(let i=0;i<W;i++){ const v=buf[start+i]; rms+=v*v; }
+  rms=Math.sqrt(rms/W);
+  const f = rms>GATE ? yin(start) : null;
+  const ok = f && f>70 && f<800;
+  frames.push({t:performance.now(), f: ok?f:null});
+  $('hz').textContent = ok ? Math.round(f)+' Hz' : '—';
+}
+$('rec').onclick = async () => {
+  const b=$('rec');
+  if(recording){
+    recording=false; b.classList.remove('on'); b.textContent="S'enregistrer"; $('hz').textContent='—';
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    if(src){ src.disconnect(); src=null; }
+    draw();
+    return;
+  }
+  ensureAudio(); frames=[]; recording=true;
+  b.classList.add('on'); b.textContent='Terminer';
+  requestAnimationFrame(tick);
+  try{
+    stream = await navigator.mediaDevices.getUserMedia(
+      {audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    if(ac.state!=='running') await ac.resume();
+    src = ac.createMediaStreamSource(stream); src.connect(analyser);
+  }catch(e){
+    msg('Micro indisponible : '+(e.name||e), true);
+    recording=false; b.classList.remove('on'); b.textContent="S'enregistrer";
+  }
+};
+
+// ---------- comparaison ----------
+const cmp=$('cmp'), cx=cmp.getContext('2d');
+function draw(){
+  const dpr=Math.min(window.devicePixelRatio||1,2), r=cmp.getBoundingClientRect();
+  const Wc=cmp.width=Math.round(r.width*dpr), Hc=cmp.height=Math.round(r.height*dpr);
+  cx.clearRect(0,0,Wc,Hc);
+  cx.font=(12*dpr)+'px "Hiragino Sans","Noto Sans JP",sans-serif';
+
+  // modele : pitch par mora renvoye par VOICEVOX, en log-Hz (0 = non voise)
+  const ref=[];
+  sentences.forEach(s => s.phrases.forEach(p => p.moras.forEach(m =>
+    ref.push({m:kata2hira(m.text), p:m.pitch||0}))));
+  const voiced = ref.filter(o=>o.p>0);
+  const mine = frames.filter(f=>f.f);
+
+  if(!voiced.length && mine.length<5){
+    cx.fillStyle='rgba(255,255,255,.45)';
+    cx.fillText('Analysez un texte, puis enregistrez-vous.', 14*dpr, 26*dpr);
+    return;
+  }
+  const pad=12*dpr, top=14*dpr, bot=Hc-28*dpr, R=8;
+  const Y = st => top+(1-(Math.max(-R,Math.min(R,st))+R)/(2*R))*(bot-top);
+  cx.strokeStyle='rgba(255,255,255,.12)'; cx.lineWidth=1;
+  cx.beginPath(); cx.moveTo(0,Y(0)); cx.lineTo(Wc,Y(0)); cx.stroke();
+
+  // demi-tons relatifs a la mediane, pour comparer deux voix de hauteurs differentes
+  const semis = arr => {
+    const s=arr.slice().sort((a,b)=>a-b), med=s[s.length>>1];
+    return arr.map(v => 17.312*(Math.log(v)-Math.log(med)));   // 12/ln(2)
+  };
+  if(voiced.length){
+    const st = semis(voiced.map(o=>Math.exp(o.p)));
+    const mw=(Wc-2*pad)/ref.length;
+    let k=0;
+    cx.strokeStyle='#7f8fe0'; cx.lineWidth=2.5*dpr; cx.beginPath(); let started=false;
+    ref.forEach((o,i)=>{
+      const x=pad+i*mw+mw/2;
+      if(o.p>0){ const y=Y(st[k++]); started?cx.lineTo(x,y):(cx.moveTo(x,y),started=true); }
+      cx.fillStyle='rgba(255,255,255,.55)'; cx.textAlign='center';
+      if(ref.length<=40) cx.fillText(o.m, x, Hc-9*dpr);
+    });
+    cx.stroke();
+  }
+  if(mine.length>=5){
+    const st=semis(mine.map(f=>f.f));
+    const t0=mine[0].t, span=Math.max(1, mine[mine.length-1].t-t0);
+    cx.strokeStyle='#ff5a3c'; cx.lineWidth=2.5*dpr; cx.lineJoin='round';
+    cx.beginPath(); let prev=null;
+    mine.forEach((f,i)=>{
+      const x=pad+(f.t-t0)/span*(Wc-2*pad), y=Y(st[i]);
+      const gap = prev && (f.t-prev>120);
+      (!prev||gap) ? cx.moveTo(x,y) : cx.lineTo(x,y);
+      prev=f.t;
+    });
+    cx.stroke();
+  }
+}
+new ResizeObserver(draw).observe(cmp);
+</script>
+</body>
+</html>
